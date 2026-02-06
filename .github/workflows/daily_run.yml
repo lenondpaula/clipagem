@@ -1,0 +1,176 @@
+name: Daily Clipagem Run
+
+on:
+  schedule:
+    # 09:00 UTC = 06:00 BRT (Brasília)
+    # Executar de segunda a sábado (1-6, onde 0=domingo, 6=sábado)
+    - cron: '0 9 * * 1-6'
+  
+  workflow_dispatch: # Permitir execução manual
+    inputs:
+      debug:
+        description: 'Ativar modo debug'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write # Permissão para criar commits e push
+
+jobs:
+  clipagem-automation:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # ==================== CHECKOUT ====================
+      - name: 📥 Checkout código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ==================== SETUP PYTHON ====================
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ==================== INSTALAR DEPENDÊNCIAS ====================
+      - name: 📦 Instalar dependências
+        run: |
+          echo "[INFO] Atualizando pip..."
+          python -m pip install --upgrade pip
+          
+          echo "[INFO] Instalando requirements.txt..."
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "[WARN] requirements.txt não encontrado, instalando manualmente..."
+            pip install selenium webdriver-manager google-generativeai pymupdf streamlit
+          fi
+          
+          echo "[INFO] Verificando instalações..."
+          python -c "import selenium; print(f'✓ selenium: {selenium.__version__}')"
+          python -c "import google.generativeai; print('✓ google.generativeai')"
+          python -c "import fitz; print('✓ pymupdf')"
+          python -c "import streamlit; print('✓ streamlit')"
+
+      # ==================== INSTALAR CHROME ====================
+      - name: 🌐 Instalar Google Chrome
+        run: |
+          echo "[INFO] Atualizando lista de pacotes..."
+          sudo apt-get update
+          
+          echo "[INFO] Instalando Google Chrome..."
+          if ! sudo apt-get install -y google-chrome-stable; then
+            echo "[WARN] apt-get falhou, tentando instalar via .deb..."
+            wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/google-chrome.deb
+            sudo apt-get install -y /tmp/google-chrome.deb
+          fi
+          
+          echo "[INFO] Verificando instalação..."
+          google-chrome --version
+          which google-chrome
+
+      # ==================== EXECUTAR DAILY SCRAPER ====================
+      - name: 🤖 Executar Daily Scraper
+        env:
+          DIARIO_LOGIN_URL: ${{ secrets.DIARIO_LOGIN_URL }}
+          DIARIO_ACCESS_URL: ${{ secrets.DIARIO_ACCESS_URL }}
+          DIARIO_USER: ${{ secrets.DIARIO_USER }}
+          DIARIO_PASS: ${{ secrets.DIARIO_PASS }}
+        run: |
+          echo "[RUN] Iniciando daily_scraper.py..."
+          python src/daily_scraper.py
+          
+          echo "[RUN] Verificando saída..."
+          ls -lh data/
+          
+          if [ -f data/diario_sm_atual.pdf ]; then
+            echo "✓ PDF baixado com sucesso!"
+            file data/diario_sm_atual.pdf
+          else
+            echo "✗ ERRO: PDF não foi encontrado após execução"
+            exit 1
+          fi
+
+      # ==================== EXECUTAR ANALYZER ====================
+      - name: 🧠 Executar Gemini Analyzer
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          echo "[RUN] Iniciando analyzer.py..."
+          python src/analyzer.py
+          
+          echo "[RUN] Verificando saída..."
+          ls -lh data/
+          
+          if [ -f data/clipagem_hoje.json ]; then
+            echo "✓ JSON de clipagem gerado com sucesso!"
+            head -50 data/clipagem_hoje.json
+          else
+            echo "✗ ERRO: JSON não foi encontrado após execução"
+            exit 1
+          fi
+
+      # ==================== AUTO-COMMIT ====================
+      - name: 📝 Auto-Commit de Dados Alterados
+        run: |
+          echo "[COMMIT] Configurando Git..."
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          echo "[COMMIT] Sincronizando com origin/main..."
+          git pull --rebase origin main
+
+          echo "[COMMIT] Verificando status..."
+          git status
+          
+          echo "[COMMIT] Adicionando arquivos de data/..."
+          git add -A data/
+          
+          echo "[COMMIT] Verificando diff..."
+          git diff --cached --stat
+          
+          if [ -n "$(git diff --cached --name-only)" ]; then
+            echo "[COMMIT] Criando commit..."
+            git commit -m "🔄 Auto-update: Clipagem e PDF do Diário de SM
+
+- PDF: Edição de $(date '+%d/%m/%Y')
+- Análise: Processada com Google Gemini 2.0 Flash
+- Timestamp: $(date '+%Y-%m-%d %H:%M:%S')
+
+[skip ci]" || true
+            
+            echo "[COMMIT] Fazendo push..."
+            git push origin HEAD:main
+            
+            echo "✓ Dados commitados e atualizados com sucesso!"
+          else
+            echo "[COMMIT] Nenhuma mudança detectada, skipping commit..."
+          fi
+
+      # ==================== NOTIFICAÇÃO DE SUCESSO ====================
+      - name: ✅ Notificação de Sucesso
+        run: |
+          echo "=========================================="
+          echo "✓ EXECUÇÃO COMPLETADA COM SUCESSO"
+          echo "=========================================="
+          echo ""
+          echo "Arquivos gerados:"
+          ls -lh data/ 2>/dev/null || echo "Pasta data/ não encontrada"
+          echo ""
+          echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
+          echo "Timezone: $(date '+%Z')"
+
+      # ==================== NOTIFICAÇÃO DE ERRO ====================
+      - name: ❌ Notificação de Erro
+        if: failure()
+        run: |
+          echo "=========================================="
+          echo "✗ ERRO NA EXECUÇÃO DO WORKFLOW"
+          echo "=========================================="
+          echo ""
+          echo "Verifique os logs acima para mais detalhes."
+          echo "GitHub Actions URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          exit 1

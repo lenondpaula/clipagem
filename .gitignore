@@ -1,0 +1,59 @@
+# Variáveis de ambiente
+.env
+.env.local
+.env.*.local
+
+# Arquivos temporários
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE e editores
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Ambiente virtual
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Dados e PDFs
+data/
+*.pdf
+*.crdownload
+
+# Cache
+.cache/
+.pytest_cache/
+
+# Logs
+*.log
+
+# Arquivos temporários de screenshot
+/tmp/
+
+# Instaladores locais
+*.deb
