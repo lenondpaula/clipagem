@@ -2,16 +2,8 @@ name: Daily Clipagem Run
 
 on:
   schedule:
-    # 09:00 UTC = 06:00 BRT (Brasília)
-    # Executar de segunda a sábado (1-6, onde 0=domingo, 6=sábado)
-    - cron: '0 9 * * 1-6'
-  
-  workflow_dispatch: # Permitir execução manual
-    inputs:
-      debug:
-        description: 'Ativar modo debug'
-        required: false
-        default: 'false'
+    - cron: '0 9 * * *'  # 09:00 UTC = 06:00 BRT (Brasilia)
+  workflow_dispatch:
 
 permissions:
   contents: write # Permissão para criar commits e push
