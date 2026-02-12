@@ -77,6 +77,14 @@ CSS_STYLE = """
         border-right: 1px solid #e8e8e8;
     }
 
+    [data-testid="stSidebar"] [data-testid="stImage"] {
+        display: none !important;
+    }
+
+    section[data-testid="stSidebar"] > div:first-child {
+        padding-top: 1rem;
+    }
+
     .sidebar-card {
         background-color: #ffffff;
         border: 1px solid #e8e8e8;
@@ -215,7 +223,7 @@ def format_timestamp(path: str) -> str:
     try:
         timestamp = datetime.fromtimestamp(os.path.getmtime(path))
     except OSError:
-        return "Horario indisponivel"
+        return "Horário indisponível"
     return timestamp.strftime("%d/%m/%Y %H:%M:%S")
 
 
@@ -227,9 +235,9 @@ def trigger_github_action() -> tuple[bool, str]:
     try:
         token = st.secrets.get("GH_TOKEN", "")
     except Exception:
-        return False, "GH_TOKEN nao configurado no Streamlit Secrets."
+        return False, "GH_TOKEN não configurado no Streamlit Secrets."
     if not token:
-        return False, "GH_TOKEN nao configurado no Streamlit Secrets."
+        return False, "GH_TOKEN não configurado no Streamlit Secrets."
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -244,7 +252,7 @@ def trigger_github_action() -> tuple[bool, str]:
         return False, f"Erro ao chamar GitHub API: {exc}"
 
     if response.status_code == 204:
-        return True, "Solicitacao enviada! O robo iniciou o processamento. Aguarde cerca de 2 minutos."
+        return True, "Solicitação enviada! O robô iniciou o processamento. Aguarde cerca de 2 minutos."
 
     message = response.text.strip() or "Resposta inesperada da API."
     return False, f"Falha ao disparar workflow ({response.status_code}): {message}"
@@ -258,19 +266,19 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown(
-    "<p class='subtitle'>Monitoramento do Diario de Santa Maria | PMSM</p>",
+    "<p class='subtitle'>Monitoramento do Diário de Santa Maria | PMSM</p>",
     unsafe_allow_html=True,
 )
 st.markdown("---")
 
 with st.sidebar:
     st.markdown("<div class='sidebar-card'>", unsafe_allow_html=True)
-    st.markdown("<div class='sidebar-title'>Acoes rapidas</div>", unsafe_allow_html=True)
+    st.markdown("<div class='sidebar-title'>Ações rápidas</div>", unsafe_allow_html=True)
     if st.button("Recarregar Dados"):
         st.cache_data.clear()
         st.rerun()
 
-    if st.button("🔄 Verificar Edicao Agora"):
+    if st.button("🔄 Verificar Edição Agora"):
         ok, info_message = trigger_github_action()
         if ok:
             st.sidebar.info(info_message)
@@ -283,14 +291,14 @@ clipagem = load_clipagem()
 if not clipagem:
     st.markdown(
         "<div class='waiting-message'>"
-        "⏳ Aguardando o processamento da edicao de hoje<br/>"
+        "⏳ Aguardando o processamento da edição de hoje<br/>"
         "<small>(previsto para as 06:15)</small>"
         "</div>",
         unsafe_allow_html=True,
     )
 else:
     st.markdown("<div class='card'>", unsafe_allow_html=True)
-    st.markdown("**Status da ultima geracao**")
+    st.markdown("**Status da última geração**")
     col_json, col_pdf = st.columns(2)
     with col_json:
         st.caption(f"JSON: {format_timestamp(DATA_PATH)}")
@@ -313,34 +321,34 @@ else:
             unsafe_allow_html=True,
         )
     else:
-        st.info("Resumo ainda nao disponivel.")
+        st.info("Resumo ainda não disponível.")
 
-    st.subheader("Licitacoes encontradas")
+    st.subheader("Licitações encontradas")
     noticias = clipagem.get("noticias", [])
     licitacoes = find_licitacoes(noticias) if isinstance(noticias, list) else []
 
     if licitacoes:
         st.dataframe(licitacoes, use_container_width=True)
     else:
-        st.warning("Nenhuma licitacao identificada no clipping de hoje.")
+        st.warning("Nenhuma licitação identificada no clipping de hoje.")
 
 st.subheader("PDF original")
 if os.path.exists(PDF_PATH):
     with open(PDF_PATH, "rb") as pdf_file:
         st.download_button(
-            label="Baixar PDF do Diario",
+            label="Baixar PDF do Diário",
             data=pdf_file,
             file_name="diario_sm_atual.pdf",
             mime="application/pdf",
         )
 else:
-    st.info("PDF do dia ainda nao disponivel.")
+    st.info("PDF do dia ainda não disponível.")
 
 st.markdown(
     """
     <div class='footer-container'>
-        <div class='footer-title'>Clipagem Digital | Diario de Santa Maria</div>
-        <div>Monitoramento e resumo diario com IA</div>
+        <div class='footer-title'>Clipagem Digital | Diário de Santa Maria</div>
+        <div>Monitoramento e resumo diário com IA</div>
         <div class='footer-contact'>
             <a href='mailto:lenondpaula@gmail.com'>📧 lenondpaula@gmail.com</a>
             <a href='https://wa.me/5555981359099'>💬 +55 (55) 98135-9099</a>
