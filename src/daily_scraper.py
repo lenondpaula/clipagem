@@ -119,7 +119,12 @@ def setup_chrome_driver():
     options.add_experimental_option("useAutomationExtension", False)
     
     try:
-        service = Service(ChromeDriverManager().install())
+        driver_path = Path(ChromeDriverManager().install())
+        if driver_path.name.startswith("THIRD_PARTY_NOTICES"):
+            candidate = driver_path.with_name("chromedriver")
+            if candidate.exists():
+                driver_path = candidate
+        service = Service(str(driver_path))
         print(f"[CHROME] ChromeDriver instalado: {service.path}")
         
         driver = webdriver.Chrome(service=service, options=options)

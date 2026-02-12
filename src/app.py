@@ -57,6 +57,21 @@ CSS_STYLE = """
         color: #333333 !important;
     }
 
+    .main-title {
+        color: #1a1a1a;
+        font-size: 2.2rem;
+        font-weight: 700;
+        text-align: center;
+        margin-bottom: 0;
+    }
+
+    .subtitle {
+        color: #666666;
+        font-size: 1rem;
+        text-align: center;
+        margin-top: 6px;
+    }
+
     [data-testid="stSidebar"] {
         background-color: #ffffff !important;
         border-right: 1px solid #e8e8e8;
@@ -116,22 +131,41 @@ CSS_STYLE = """
         font-size: 1.1rem;
     }
 
-    .footer {
+    .footer-container {
         text-align: center;
         color: #999999;
         font-size: 0.85rem;
-        padding-top: 2rem;
-        margin-top: 3rem;
         border-top: 1px solid #e0e0e0;
+        padding-top: 20px;
+        margin-top: 30px;
     }
 
-    .footer a {
-        color: #999999;
+    .footer-title {
+        color: #333333;
+        font-weight: 700;
+        font-size: 1rem;
+        margin-bottom: 6px;
+    }
+
+    .footer-contact {
+        margin: 15px 0;
+    }
+
+    .footer-contact a {
+        margin: 0 10px;
+        color: #333333 !important;
         text-decoration: none;
     }
 
-    .footer a:hover {
+    .footer-contact a:hover {
         text-decoration: underline;
+    }
+
+    .footer-copyright {
+        margin-top: 15px;
+        padding-top: 15px;
+        border-top: 1px solid #e0e0e0;
+        color: #999999;
     }
 </style>
 """
@@ -220,9 +254,14 @@ st.set_page_config(page_title="Clipagem - Dashboard", page_icon="🗞️", layou
 st.markdown(CSS_STYLE, unsafe_allow_html=True)
 
 st.markdown(
-    "<h1 style='text-align: center; color: #333333; margin-bottom: 0;'>Dashboard de Leitura</h1>",
+    "<h1 class='main-title'>📰 Clipagem Digital</h1>",
     unsafe_allow_html=True,
 )
+st.markdown(
+    "<p class='subtitle'>Monitoramento do Diario de Santa Maria | PMSM</p>",
+    unsafe_allow_html=True,
+)
+st.markdown("---")
 
 with st.sidebar:
     st.markdown("<div class='sidebar-card'>", unsafe_allow_html=True)
@@ -299,18 +338,22 @@ else:
 
 st.markdown(
     """
-    <div class='footer'>
-        <p>
-            Desenvolvido por <a href='https://github.com/lenondpaula' target='_blank'>Lenon de Paula</a>
-            para a Secretaria de Comunicacao - PMSM
-        </p>
-        <p>
-            Powered by Google Gemini 2.0 Flash |
-            <a href='https://github.com/lenondpaula/clipagem' target='_blank'>GitHub</a>
-        </p>
-        <p style='margin-top: 1rem; font-size: 0.8rem;'>
-            © 2026 Lenon de Paula. Todos os direitos reservados.
-        </p>
+    <div class='footer-container'>
+        <div class='footer-title'>Clipagem Digital | Diario de Santa Maria</div>
+        <div>Monitoramento e resumo diario com IA</div>
+        <div class='footer-contact'>
+            <a href='mailto:lenondpaula@gmail.com'>📧 lenondpaula@gmail.com</a>
+            <a href='https://wa.me/5555981359099'>💬 +55 (55) 98135-9099</a>
+        </div>
+        <div class='footer-contact'>
+            <a href='https://www.linkedin.com/in/lenonmpaula/'>🔗 LinkedIn</a>
+            <a href='https://github.com/lenondpaula'>🐙 GitHub</a>
+            <a href='https://t.me/+5555981359099'>📲 Telegram</a>
+            <a href='https://goodluke.streamlit.app/'>🧪 GoodLuke AI Hub</a>
+        </div>
+        <div class='footer-copyright'>
+            © 2026 Lenon de Paula
+        </div>
     </div>
     """,
     unsafe_allow_html=True,

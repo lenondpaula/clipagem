@@ -11,13 +11,14 @@
 **Credenciais**: publicacaopmsm@gmail.com / AgysIOldtw  
 **Horário de Execução**: 06:15 BRT (09:00 UTC) de segunda a sábado
 
-## Status Atual do Projeto (04/02/2026)
+## Status Atual do Projeto (12/02/2026)
 
 ### ✅ Componentes Funcionais
-- **src/daily_scraper.py** (521 linhas): Selenium scraper com 14+ seletores robustos
-- **src/analyzer.py** (230 linhas): Extração PDF + análise Gemini 2.0 Flash
-- **app.py** (349 linhas): Interface Streamlit com tema light forçado
-- **.github/workflows/daily_run.yml**: GitHub Actions com cron schedule
+- **src/daily_scraper.py**: Selenium scraper com seletores robustos + normalizacao de ChromeDriver
+- **src/analyzer.py**: Extração PDF + análise Gemini 2.0 Flash
+- **src/app.py**: Interface principal do Streamlit (deploy) com layout atualizado
+- **.github/workflows/daily_run.yml**: GitHub Actions com cron schedule e carregamento de secrets
+- **.github/workflows/keep_alive.yml**: Keep alive com ping HTTP e fallback Selenium
 - **data/**: Armazena PDF e JSON de clipping
 
 ### ⚠️ Problema Atual - EM ANDAMENTO
@@ -32,10 +33,10 @@ O scraper está baixando PDF de publicações legais (VALVI Companhia) em vez da
 - Edição alvo confirmada: **Edição Nº 7328 - Data: 04/02/2026**
 
 ### 🔧 Últimas Ações Realizadas
-1. Scraper executado com sucesso - login OK, download OK
-2. PDF baixado incorretamente (VALVI em vez de Diário SM)
-3. Identificado filtro necessário através de inspeção manual
-4. Tentativas de implementação do filtro iniciadas (combobox não encontrado)
+1. Atualizado frontend do `src/app.py` com layout/rodape estilo AgroPulse
+2. Keep alive reforcado com ping HTTP + fallback Selenium
+3. Workflow passou a carregar `SECRETES` (KEY=VALUE) para variaveis do scraper
+4. Fix aplicado para evitar ChromeDriver apontando para `THIRD_PARTY_NOTICES.chromedriver`
 
 ## Arquitetura e Componentes
 
@@ -69,6 +70,7 @@ O scraper está baixando PDF de publicações legais (VALVI Companhia) em vez da
 - Funções em snake_case com docstrings descritivas
 - Arquivos de dados: `diario_sm_atual.pdf`, `clipagem_hoje.json`
 - Variáveis de ambiente: `DIARIO_USER`, `DIARIO_PASS`, `GEMINI_API_KEY`
+- Secrets no Actions: `SECRETES` com linhas `KEY=VALUE` (DIARIO_LOGIN_URL, DIARIO_ACCESS_URL, DIARIO_USER, DIARIO_PASS)
 
 ### Patterns de Implementação
 - **Seletores Robustos**: Lista de fallbacks com try/except para elementos dinâmicos
@@ -89,7 +91,7 @@ python src/daily_scraper.py
 python src/analyzer.py
 
 # Interface web (porta 8501)
-streamlit run app.py --server.port 8501
+streamlit run src/app.py --server.port 8501
 ```
 
 ### Estrutura de Dados
