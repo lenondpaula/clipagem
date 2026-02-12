@@ -64,12 +64,20 @@ jobs:
           which google-chrome
 
       # ==================== EXECUTAR DAILY SCRAPER ====================
+      - name: 🔐 Carregar secrets do arquivo
+        run: |
+          printf '%s\n' "${{ secrets.SECRETES }}" > /tmp/secrets.env
+          while IFS= read -r line; do
+            if [ -z "$line" ]; then
+              continue
+            fi
+            case "$line" in
+              \#*) continue ;;
+            esac
+            echo "$line" >> "$GITHUB_ENV"
+          done < /tmp/secrets.env
+
       - name: 🤖 Executar Daily Scraper
-        env:
-          DIARIO_LOGIN_URL: ${{ secrets.DIARIO_LOGIN_URL }}
-          DIARIO_ACCESS_URL: ${{ secrets.DIARIO_ACCESS_URL }}
-          DIARIO_USER: ${{ secrets.DIARIO_USER }}
-          DIARIO_PASS: ${{ secrets.DIARIO_PASS }}
         run: |
           echo "[RUN] Iniciando daily_scraper.py..."
           python src/daily_scraper.py
