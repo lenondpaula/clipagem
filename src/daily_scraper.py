@@ -6,7 +6,6 @@ Automatiza o login em plataforma de diário oficial e download diário de PDFs
 import os
 import sys
 import time
-import random
 import glob
 from pathlib import Path
 from dotenv import load_dotenv
@@ -103,15 +102,10 @@ def setup_chrome_driver():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
+    options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-plugins")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument(
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    )
     
     # Configurar pasta de download automático
     prefs = {
@@ -130,11 +124,6 @@ def setup_chrome_driver():
         
         driver = webdriver.Chrome(service=service, options=options)
         print("[CHROME] ChromeDriver configurado com sucesso")
-        
-        # Remover indicio de automacao exposto via webdriver
-        driver.execute_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        )
         
         return driver
     
@@ -323,7 +312,6 @@ def perform_login(driver):
             raise Exception("Botão 'Entrar' não encontrado com nenhum seletor")
         
         print(f"[LOGIN] Botão 'Entrar' encontrado")
-        time.sleep(random.uniform(2, 5))
         driver.execute_script("arguments[0].click();", login_button)
         print(f"[LOGIN] Botão clicado. Aguardando redirecionamento...")
         
@@ -343,10 +331,8 @@ def set_publication_filter(driver):
     print("[FILTRO] Configurando filtro 'Public. Legal' como 'Exceto'...")
     
     try:
-        wait = WebDriverWait(driver, LOGIN_TIMEOUT)
-        
         # Aguardar página carregar completamente
-        wait.until(EC.presence_of_element_located((By.XPATH, "//body")))
+        time.sleep(3)
         
         # Debug: Salvar screenshot para análise
         try:
@@ -366,92 +352,87 @@ def set_publication_filter(driver):
         except Exception as e:
             print(f"[FILTRO] Erro no debug: {e}")
         
-        # Estratégia 1: Encontrar o label "Public. Legal"
+        # Estratégia 1: Encontrar o combobox pelo label "Public. Legal"
+        # Primeiro encontrar o label
         label_selectors = [
-            "//label[contains(normalize-space(), 'Public. Legal')]",
-            "//*[contains(normalize-space(), 'Public. Legal') and (self::label or self::div or self::span)]",
+            "//label[contains(text(), 'Public. Legal')]",
+            "//*[contains(text(), 'Public. Legal') and (self::label or self::div or self::span)]",
         ]
         
-        label_element = None
+        dropdown_input = None
         for label_selector in label_selectors:
             try:
-                label_element = wait.until(
-                    EC.presence_of_element_located((By.XPATH, label_selector))
-                )
-                if label_element:
-                    print("[FILTRO] Label 'Public. Legal' encontrado")
+                label_element = driver.find_element(By.XPATH, label_selector)
+                label_id = label_element.get_attribute("id")
+                print(f"[FILTRO] Label encontrado com id: {label_id}")
+                
+                # Agora encontrar o input que usa esse label
+                if label_id:
+                    dropdown_input = driver.find_element(By.XPATH, 
+                        f"//input[@aria-labelledby='{label_id}']")
+                    print(f"[FILTRO] Dropdown encontrado via label")
                     break
             except:
                 continue
         
-        # Estratégia 2: Localizar o combobox por diferentes relações com o label
-        dropdown_selectors = []
-        if label_element:
-            label_id = label_element.get_attribute("id")
-            if label_id:
-                dropdown_selectors.append(
-                    f"//input[@role='combobox' and @aria-labelledby='{label_id}']"
-                )
-            dropdown_selectors.extend([
-                "//*[contains(@class, 'v-input') or contains(@class, 'v-select')]"
-                "[.//*[contains(normalize-space(), 'Public. Legal')]]"
-                "//input[@role='combobox']",
-                "(//*[contains(normalize-space(), 'Public. Legal')])[1]"
-                "/following::input[@role='combobox'][1]",
-            ])
-        
-        dropdown_selectors.extend([
-            "//input[@role='combobox' and contains(@aria-label, 'Public')]",
-            "//input[@role='combobox' and contains(@aria-label, 'Legal')]",
-            "//input[@role='combobox']",
-        ])
-        
-        dropdown_input = None
-        for selector in dropdown_selectors:
+        # Estratégia 2: Encontrar pelo texto do container
+        if not dropdown_input:
             try:
-                candidates = driver.find_elements(By.XPATH, selector)
-                for candidate in candidates:
-                    if candidate.is_displayed():
-                        dropdown_input = candidate
-                        print("[FILTRO] Dropdown encontrado")
-                        break
-                if dropdown_input:
-                    break
+                # Procurar pelo container que tem "Public. Legal" e depois o input dentro
+                container = driver.find_element(By.XPATH, 
+                    "//div[contains(., 'Public. Legal') and contains(@class, 'v-input')]")
+                dropdown_input = container.find_element(By.XPATH, 
+                    ".//input[@role='combobox']")
+                print(f"[FILTRO] Dropdown encontrado via container")
             except:
-                continue
+                pass
+        
+        # Estratégia 3: Se há apenas um combobox, usar ele
+        if not dropdown_input:
+            try:
+                combos = driver.find_elements(By.XPATH, "//input[@role='combobox']")
+                if len(combos) == 1:
+                    dropdown_input = combos[0]
+                    print(f"[FILTRO] Usando único combobox disponível")
+                elif len(combos) > 1:
+                    # Pegar o primeiro que está visível
+                    for combo in combos:
+                        if combo.is_displayed():
+                            dropdown_input = combo
+                            print(f"[FILTRO] Usando primeiro combobox visível")
+                            break
+            except:
+                pass
         
         if not dropdown_input:
             print("[FILTRO] AVISO: Dropdown não encontrado, continuando sem filtro...")
             return
         
-        current_value = (dropdown_input.get_attribute("value") or "").strip()
-        if "Exceto" in current_value:
-            print("[FILTRO] Filtro ja estava em 'Exceto'")
-            return
-        
         # Clicar no dropdown para abrir as opções
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", dropdown_input)
         driver.execute_script("arguments[0].click();", dropdown_input)
         print("[FILTRO] Dropdown clicado, aguardando opções...")
-        time.sleep(1.5)
+        time.sleep(2)
         
         # Seletores para encontrar a opção "Exceto"
         exceto_selectors = [
-            "//div[@role='option' and normalize-space()='Exceto']",
-            "//span[normalize-space()='Exceto']/ancestor::div[@role='option'][1]",
-            "//div[contains(@class, 'v-list-item')][.//div[normalize-space()='Exceto']]",
-            "//div[contains(@class, 'v-list-item')][.//span[normalize-space()='Exceto']]",
-            "//div[@role='listbox']//div[normalize-space()='Exceto']",
+            # Texto exato
+            "//div[text()='Exceto']",
+            "//span[text()='Exceto']",
+            "//div[contains(@class, 'v-list-item') and contains(., 'Exceto')]",
+            
+            # Por role
+            "//div[@role='option' and contains(., 'Exceto')]",
+            "//*[@role='listitem' and contains(., 'Exceto')]",
         ]
         
         print("[FILTRO] Procurando opção 'Exceto'...")
         exceto_option = None
         for selector in exceto_selectors:
             try:
-                exceto_option = wait.until(
+                exceto_option = WebDriverWait(driver, 5).until(
                     EC.element_to_be_clickable((By.XPATH, selector))
                 )
-                print("[FILTRO] Opção 'Exceto' encontrada")
+                print(f"[FILTRO] Opção 'Exceto' encontrada")
                 break
             except:
                 continue
@@ -461,7 +442,6 @@ def set_publication_filter(driver):
             return
         
         # Clicar na opção "Exceto"
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", exceto_option)
         driver.execute_script("arguments[0].click();", exceto_option)
         print("[FILTRO] Opção 'Exceto' selecionada!")
         
@@ -499,7 +479,6 @@ def access_and_download_pdf(driver):
         print("[PDF] Ícone de PDF encontrado")
         
         # Clicar no ícone para iniciar download
-        time.sleep(random.uniform(2, 5))
         driver.execute_script("arguments[0].click();", pdf_icon)
         print("[PDF] Clique no ícone realizado. Aguardando download...")
         

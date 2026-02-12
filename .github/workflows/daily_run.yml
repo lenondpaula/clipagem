@@ -126,13 +126,11 @@ jobs:
           
           if [ -n "$(git diff --cached --name-only)" ]; then
             echo "[COMMIT] Criando commit..."
-            git commit -m "🔄 Auto-update: Clipagem e PDF do Diário de SM
-
-- PDF: Edição de $(date '+%d/%m/%Y')
-- Análise: Processada com Google Gemini 2.0 Flash
-- Timestamp: $(date '+%Y-%m-%d %H:%M:%S')
-
-[skip ci]" || true
+            git commit -m "🔄 Auto-update: Clipagem e PDF do Diário de SM" \
+              -m "- PDF: Edição de $(date '+%d/%m/%Y')" \
+              -m "- Análise: Processada com Google Gemini 2.0 Flash" \
+              -m "- Timestamp: $(date '+%Y-%m-%d %H:%M:%S')" \
+              -m "[skip ci]" || true
             
             echo "[COMMIT] Fazendo push..."
             git push origin HEAD:main
