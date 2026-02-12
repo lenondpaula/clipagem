@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import glob
+import stat
 from pathlib import Path
 from dotenv import load_dotenv
 from selenium import webdriver
@@ -124,6 +125,11 @@ def setup_chrome_driver():
             candidate = driver_path.with_name("chromedriver")
             if candidate.exists():
                 driver_path = candidate
+        
+        # Garantir permissões de execução (fix para GitHub Actions)
+        os.chmod(driver_path, os.stat(driver_path).st_mode | stat.S_IEXEC)
+        print(f"[CHROME] Permissões de execução aplicadas")
+        
         service = Service(str(driver_path))
         print(f"[CHROME] ChromeDriver instalado: {service.path}")
         
