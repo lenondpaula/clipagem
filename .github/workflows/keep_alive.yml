@@ -2,7 +2,7 @@ name: Keep Streamlit Alive
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "0 */6 * * *"
   workflow_dispatch:
 
 jobs:
@@ -37,12 +37,10 @@ jobs:
           fi
           google-chrome --version
 
-      - name: 🔁 Rodar keep alive
+      - name: 🔁 Rodar keep alive (Selenium)
         env:
           KEEP_ALIVE_URL: "https://clipagem-secom.streamlit.app/"
           KEEP_ALIVE_WAIT_SECONDS: "10"
           KEEP_ALIVE_SCREENSHOT: "keep_alive_screenshot.png"
-          KEEP_ALIVE_HTTP_TIMEOUT: "20"
-          KEEP_ALIVE_USE_SELENIUM: "true"
         run: |
           python keep_alive.py

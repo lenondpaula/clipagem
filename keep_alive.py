@@ -6,7 +6,6 @@ import os
 import time
 from datetime import datetime
 
-import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -16,8 +15,6 @@ from webdriver_manager.chrome import ChromeDriverManager
 TARGET_URL = os.getenv("KEEP_ALIVE_URL", "https://clipagem-secom.streamlit.app/")
 WAIT_SECONDS = int(os.getenv("KEEP_ALIVE_WAIT_SECONDS", "10"))
 SCREENSHOT_PATH = os.getenv("KEEP_ALIVE_SCREENSHOT", "keep_alive_screenshot.png")
-REQUEST_TIMEOUT = int(os.getenv("KEEP_ALIVE_HTTP_TIMEOUT", "20"))
-USE_SELENIUM_FALLBACK = os.getenv("KEEP_ALIVE_USE_SELENIUM", "true").lower() == "true"
 
 
 def build_driver() -> webdriver.Chrome:
@@ -32,47 +29,33 @@ def build_driver() -> webdriver.Chrome:
     return webdriver.Chrome(service=service, options=options)
 
 
-def ping_http() -> bool:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/122.0 Safari/537.36",
-    }
-    try:
-        response = requests.get(TARGET_URL, headers=headers, timeout=REQUEST_TIMEOUT)
-    except requests.RequestException as exc:
-        print(f"HTTP keep-alive failed: {exc}")
-        return False
 
-    ok = 200 <= response.status_code < 400
-    print(f"HTTP keep-alive status: {response.status_code}")
-    return ok
 
 
 def run() -> None:
-    if ping_http():
-        return
-
-    if not USE_SELENIUM_FALLBACK:
-        print("Selenium fallback disabled. Exiting.")
-        return
-
+    """Mantém a app Streamlit ativa via Selenium Chrome headless."""
     driver: webdriver.Chrome | None = None
     try:
+        print(f"[KEEP_ALIVE] Iniciando acesso a {TARGET_URL}...")
         driver = build_driver()
         driver.set_page_load_timeout(60)
         driver.get(TARGET_URL)
+        print(f"[KEEP_ALIVE] App acessada com sucesso")
         time.sleep(WAIT_SECONDS)
 
         timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
         screenshot_file = SCREENSHOT_PATH.replace(".png", f"-{timestamp}.png")
         driver.save_screenshot(screenshot_file)
-        print(f"Screenshot saved: {screenshot_file}")
+        print(f"[KEEP_ALIVE] Screenshot salvo: {screenshot_file}")
+        print(f"[KEEP_ALIVE] Keep-alive completado com sucesso")
     except Exception as exc:
-        print(f"Keep-alive failed: {exc}")
+        print(f"[KEEP_ALIVE] ✗ Erro ao manter app ativa: {exc}")
+        raise
     finally:
         if driver is not None:
             try:
                 driver.quit()
+                print(f"[KEEP_ALIVE] Driver finalizado")
             except Exception:
                 pass
 
