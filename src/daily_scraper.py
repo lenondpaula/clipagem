@@ -536,35 +536,63 @@ def set_publication_filter(driver):
         # Clicar no dropdown para abrir as opções
         driver.execute_script("arguments[0].click();", dropdown_input)
         print("[FILTRO] Dropdown clicado, aguardando opções...")
-        time.sleep(2)
+        time.sleep(3)
+        
+        # Debug: Listar todas as opções disponíveis
+        try:
+            all_options = driver.find_elements(By.XPATH, "//*[@role='option']")
+            print(f"[FILTRO] Total de opções no menu: {len(all_options)}")
+            for idx, opt in enumerate(all_options):
+                opt_text = opt.text.strip()
+                print(f"[FILTRO]   Opção {idx}: '{opt_text}'")
+        except Exception as e:
+            print(f"[FILTRO] Erro ao listar opções: {e}")
         
         # Seletores para encontrar a opção "Exceto"
         exceto_selectors = [
-            # Texto exato
-            "//div[text()='Exceto']",
-            "//span[text()='Exceto']",
+            # Texto exato (case sensitive)
+            "//div[@role='option' and text()='Exceto']",
+            "//div[@role='option']//div[text()='Exceto']",
+            
+            # Contém texto
+            "//div[@role='option' and contains(., 'Exceto')]",
             "//div[contains(@class, 'v-list-item') and contains(., 'Exceto')]",
             
-            # Por role
-            "//div[@role='option' and contains(., 'Exceto')]",
+            # Case insensitive
+            "//*[@role='option' and contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'exceto')]",
+            
+            # Outros roles
             "//*[@role='listitem' and contains(., 'Exceto')]",
-            "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'exceto') and @role='option']",
+            "//span[text()='Exceto']",
         ]
         
         print("[FILTRO] Procurando opção 'Exceto'...")
         exceto_option = None
         for selector in exceto_selectors:
             try:
-                exceto_option = WebDriverWait(driver, 5).until(
+                exceto_option = WebDriverWait(driver, 7).until(
                     EC.element_to_be_clickable((By.XPATH, selector))
                 )
-                print(f"[FILTRO] Opção 'Exceto' encontrada")
+                print(f"[FILTRO] Opção 'Exceto' encontrada com seletor: {selector}")
                 break
             except:
                 continue
         
         if not exceto_option:
             print("[FILTRO] AVISO: Opção 'Exceto' não encontrada, continuando sem filtro...")
+            # Tentar buscar por qualquer opção que contenha "exceto" (última tentativa)
+            try:
+                all_opts = driver.find_elements(By.XPATH, "//*[@role='option']")
+                for opt in all_opts:
+                    if 'exceto' in opt.text.lower():
+                        exceto_option = opt
+                        print(f"[FILTRO] Opção encontrada por busca manual: '{opt.text}'")
+                        break
+            except:
+                pass
+        
+        if not exceto_option:
+            print("[FILTRO] ERRO: Não foi possível encontrar a opção 'Exceto'")
             return
         
         # Clicar na opção "Exceto"
@@ -582,7 +610,7 @@ def set_publication_filter(driver):
 
 # ==================== ACESSO E DOWNLOAD DO PDF ====================
 def access_and_download_pdf(driver):
-    """Acessa a URL de download, aplica filtro e clica no ícone PDF"""
+    """Acessa a URL de download, aplica filtro e clica no ícone PDF da edição JORNAL mais recente"""
     print(f"[PDF] Navegando para {DIARIO_ACCESS_URL}...")
     driver.get(DIARIO_ACCESS_URL)
     
@@ -594,15 +622,52 @@ def access_and_download_pdf(driver):
         # Aplicar filtro "Public. Legal" = "Exceto"
         set_publication_filter(driver)
         
-        # Procurar pelo ícone PDF (classe mdi-file-pdf-box)
-        print("[PDF] Procurando ícone de PDF (mdi-file-pdf-box)...")
-        pdf_icon = WebDriverWait(driver, PDF_WAIT_TIMEOUT).until(
-            EC.element_to_be_clickable((
-                By.XPATH,
-                "//*[contains(@class, 'mdi-file-pdf-box')]"
-            ))
-        )
-        print("[PDF] Ícone de PDF encontrado")
+        # Aguardar após aplicar filtro para lista atualizar
+        time.sleep(3)
+        
+        # Estratégia: Procurar pelo card/item que contenha "JORNAL" e seja o primeiro (mais recente)
+        print("[PDF] Procurando primeira edição do tipo JORNAL...")
+        
+        jornal_card = None
+        card_selectors = [
+            # Procurar por card/container que contenha "JORNAL" no texto
+            "//div[contains(., 'JORNAL') and contains(@class, 'v-card')][1]",
+            "//div[contains(., 'JORNAL') and contains(@class, 'card')][1]",
+            "(//div[contains(., 'JORNAL')])[1]",
+            # Procurar por qualquer elemento que tenha "JORNAL" como texto direto
+            "(//*[text()='JORNAL']/ancestor::div[contains(@class, 'v-card')])[1]",
+            "(//*[text()='JORNAL']/ancestor::*[contains(@class, 'card')])[1]",
+        ]
+        
+        for selector in card_selectors:
+            try:
+                jornal_card = driver.find_element(By.XPATH, selector)
+                print(f"[PDF] Card JORNAL encontrado com: {selector}")
+                break
+            except:
+                continue
+        
+        # Se encontrou o card JORNAL, procurar o ícone PDF dentro dele
+        if jornal_card:
+            print("[PDF] Procurando ícone PDF dentro do card JORNAL...")
+            try:
+                pdf_icon = jornal_card.find_element(By.XPATH, 
+                    ".//*[contains(@class, 'mdi-file-pdf-box')]")
+                print("[PDF] Ícone de PDF encontrado no card JORNAL")
+            except:
+                print("[PDF] AVISO: Ícone PDF não encontrado no card, buscando globalmente...")
+                jornal_card = None
+        
+        # Fallback: Se não encontrou card JORNAL, pegar o PRIMEIRO ícone PDF (mais arriscado)
+        if not jornal_card:
+            print("[PDF] Buscando primeiro ícone PDF disponível (fallback)...")
+            pdf_icon = WebDriverWait(driver, PDF_WAIT_TIMEOUT).until(
+                EC.element_to_be_clickable((
+                    By.XPATH,
+                    "//*[contains(@class, 'mdi-file-pdf-box')][1]"
+                ))
+            )
+            print("[PDF] Ícone de PDF encontrado (primeiro disponível)")
         
         # Clicar no ícone para iniciar download
         driver.execute_script("arguments[0].click();", pdf_icon)
