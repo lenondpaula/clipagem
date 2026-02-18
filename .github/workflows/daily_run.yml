@@ -95,9 +95,6 @@ jobs:
 
       # ==================== EXECUTAR ANALYZER ====================
       - name: 🧠 Executar Gemini Analyzer
-        env:
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           echo "[RUN] Iniciando analyzer.py..."
           python src/analyzer.py
@@ -161,6 +158,16 @@ jobs:
           echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
           echo "Timezone: $(date '+%Z')"
 
+      # ==================== UPLOAD DE DEBUG EM CASO DE ERRO ====================
+      - name: 🐛 Upload de Debug (screenshot + HTML)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: login-debug-${{ github.run_id }}
+          path: /tmp/login_error.*
+          if-no-files-found: ignore
+          retention-days: 7
+
       # ==================== NOTIFICAÇÃO DE ERRO ====================
       - name: ❌ Notificação de Erro
         if: failure()
@@ -171,4 +178,10 @@ jobs:
           echo ""
           echo "Verifique os logs acima para mais detalhes."
           echo "GitHub Actions URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo ""
+          echo "Arquivos de debug disponíveis:"
+          echo "- /tmp/login_error.png (screenshot da página)"
+          echo "- /tmp/login_error.html (HTML da página)"
+          echo ""
+          echo "Acesse: Actions > [Daily Clipagem Run] > Artifacts > login-debug-${{ github.run_id }}"
           exit 1
