@@ -187,6 +187,74 @@ def find_clickable_element_with_fallback(driver, selectors, timeout=LOGIN_TIMEOU
     return None
 
 
+def find_element_with_fallback_any_frame(driver, selectors, timeout=LOGIN_TIMEOUT):
+    """
+    Procura elemento no documento principal e em iframes.
+    Mantem o contexto no frame onde o elemento for encontrado.
+    """
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        pass
+
+    element = find_element_with_fallback(driver, selectors, timeout)
+    if element:
+        return element
+
+    frames = driver.find_elements(By.TAG_NAME, "iframe")
+    for idx, frame in enumerate(frames):
+        try:
+            driver.switch_to.default_content()
+            driver.switch_to.frame(frame)
+        except Exception:
+            continue
+
+        element = find_element_with_fallback(driver, selectors, max(5, timeout // 2))
+        if element:
+            print(f"[LOGIN] Elemento encontrado dentro do iframe {idx}")
+            return element
+
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        pass
+    return None
+
+
+def find_clickable_element_with_fallback_any_frame(driver, selectors, timeout=LOGIN_TIMEOUT):
+    """
+    Procura elemento clicavel no documento principal e em iframes.
+    Mantem o contexto no frame onde o elemento for encontrado.
+    """
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        pass
+
+    element = find_clickable_element_with_fallback(driver, selectors, timeout)
+    if element:
+        return element
+
+    frames = driver.find_elements(By.TAG_NAME, "iframe")
+    for idx, frame in enumerate(frames):
+        try:
+            driver.switch_to.default_content()
+            driver.switch_to.frame(frame)
+        except Exception:
+            continue
+
+        element = find_clickable_element_with_fallback(driver, selectors, max(5, timeout // 2))
+        if element:
+            print(f"[LOGIN] Elemento clicavel encontrado dentro do iframe {idx}")
+            return element
+
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        pass
+    return None
+
+
 def perform_login(driver):
     """
     Realiza login na plataforma do diário oficial com seletores robustos.
@@ -210,9 +278,24 @@ def perform_login(driver):
             "//input[@placeholder='Email']",
             "//input[@placeholder='e-mail']",
             "//input[@placeholder='Usuário']",
+            "//input[@placeholder='Usuario']",
+            "//input[contains(@placeholder, 'E-mail')]",
+            "//input[contains(@placeholder, 'Email')]",
+            "//input[contains(@placeholder, 'Usuário')]",
+            "//input[contains(@placeholder, 'Usuario')]",
+            "//input[contains(@placeholder, 'Login')]",
             
             # Por atributo type=email
             "//input[@type='email']",
+            "//input[contains(@type, 'email')]",
+            
+            # Por atributo name/id
+            "//input[contains(@name, 'email')]",
+            "//input[contains(@name, 'user')]",
+            "//input[contains(@name, 'login')]",
+            "//input[contains(@id, 'email')]",
+            "//input[contains(@id, 'user')]",
+            "//input[contains(@id, 'login')]",
             
             # Por atributo type=text com identificadores
             "//input[@type='text' and @maxlength='100']",
@@ -233,12 +316,18 @@ def perform_login(driver):
             "//input[1]",
         ]
         
-        username_field = find_element_with_fallback(driver, username_selectors, LOGIN_TIMEOUT)
+        username_field = find_element_with_fallback_any_frame(driver, username_selectors, LOGIN_TIMEOUT)
         
         if not username_field:
             print("[LOGIN] Nenhum campo de usuário encontrado!")
             print("[LOGIN] Tentando screenshot para debug...")
-            driver.save_screenshot("/tmp/login_error.png")
+            print(f"[LOGIN] URL atual: {driver.current_url}")
+            try:
+                driver.save_screenshot("/tmp/login_error.png")
+                with open("/tmp/login_error.html", "w", encoding="utf-8") as handle:
+                    handle.write(driver.page_source)
+            except Exception:
+                pass
             raise Exception("Campo de usuário não encontrado com nenhum seletor")
         
         print(f"[LOGIN] Campo de Usuário encontrado")
@@ -256,9 +345,18 @@ def perform_login(driver):
             "//input[@placeholder='Senha']",
             "//input[@placeholder='senha']",
             "//input[@placeholder='Password']",
+            "//input[contains(@placeholder, 'Senha')]",
+            "//input[contains(@placeholder, 'Password')]",
             
             # Por type=password
             "//input[@type='password']",
+            "//input[contains(@type, 'password')]",
+            
+            # Por atributo name/id
+            "//input[contains(@name, 'pass')]",
+            "//input[contains(@name, 'senha')]",
+            "//input[contains(@id, 'pass')]",
+            "//input[contains(@id, 'senha')]",
             
             # Por atributo type=text com identificadores
             "//input[@type='text' and @maxlength='20']",
@@ -277,7 +375,7 @@ def perform_login(driver):
             "//input[2]",
         ]
         
-        password_field = find_element_with_fallback(driver, password_selectors, LOGIN_TIMEOUT)
+        password_field = find_element_with_fallback_any_frame(driver, password_selectors, LOGIN_TIMEOUT)
         
         if not password_field:
             print("[LOGIN] Nenhum campo de senha encontrado!")
@@ -316,7 +414,7 @@ def perform_login(driver):
             "//button[1]",
         ]
         
-        login_button = find_clickable_element_with_fallback(driver, button_selectors, LOGIN_TIMEOUT)
+        login_button = find_clickable_element_with_fallback_any_frame(driver, button_selectors, LOGIN_TIMEOUT)
         
         if not login_button:
             print("[LOGIN] Nenhum botão de entrar encontrado!")
@@ -328,6 +426,10 @@ def perform_login(driver):
         
         # Aguardar login ser completado
         time.sleep(5)
+        try:
+            driver.switch_to.default_content()
+        except Exception:
+            pass
         print("[LOGIN] Login realizado com sucesso")
         
     except Exception as e:
@@ -397,6 +499,18 @@ def set_publication_filter(driver):
                 print(f"[FILTRO] Dropdown encontrado via container")
             except:
                 pass
+
+        # Estratégia 2.1: Vuetify v-select/v-field
+        if not dropdown_input:
+            try:
+                container = driver.find_element(
+                    By.XPATH,
+                    "//div[contains(@class, 'v-select') and .//label[contains(., 'Public. Legal')]]",
+                )
+                dropdown_input = container.find_element(By.XPATH, ".//input[@role='combobox']")
+                print("[FILTRO] Dropdown encontrado via v-select")
+            except Exception:
+                pass
         
         # Estratégia 3: Se há apenas um combobox, usar ele
         if not dropdown_input:
@@ -434,6 +548,7 @@ def set_publication_filter(driver):
             # Por role
             "//div[@role='option' and contains(., 'Exceto')]",
             "//*[@role='listitem' and contains(., 'Exceto')]",
+            "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'exceto') and @role='option']",
         ]
         
         print("[FILTRO] Procurando opção 'Exceto'...")
