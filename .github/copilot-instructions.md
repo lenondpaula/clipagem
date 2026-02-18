@@ -1,87 +1,157 @@
-# Instruções para Agentes de IA - Clipagem Chatbot
+# Instruções para Agentes de IA - Clipagem Digital
 
 ## Visão Geral do Projeto
 
-**Clipagem** é um sistema de automação de clipping do **Diário de Santa Maria**. O projeto automatiza:
-1. Download diário do PDF do jornal (via Selenium)
-2. Análise de conteúdo com IA (Google Gemini)
-3. Exibição em interface web (Streamlit)
+**Clipagem Digital** é um sistema de automação de clipping do **Diário de Santa Maria**. O projeto automatiza:
+1. Download diário do PDF do jornal (via Selenium + Chrome headless)
+2. Análise de conteúdo com IA (Google Gemini 2.0 Flash)
+3. Exibição em interface web (Streamlit Cloud)
+4. Commit automático dos dados gerados
 
-**URL Alvo**: https://diariosm.com.br/assinante/newflip  
+**URL Login**: https://diariosm.com.br/assinante/login?redirect=/newflip  
+**URL Acesso**: https://diariosm.com.br/assinante/newflip  
 **Credenciais**: publicacaopmsm@gmail.com / AgysIOldtw  
-**Horário de Execução**: 06:15 BRT (09:00 UTC) de segunda a sábado
+**Horário de Execução**: 06:15 BRT (09:00 UTC) diariamente  
+**App Streamlit**: https://clipagem-secom.streamlit.app/
 
-## Status Atual do Projeto (12/02/2026)
+---
 
-### ✅ Componentes Funcionais
-- **src/daily_scraper.py**: Selenium scraper com seletores robustos + normalizacao de ChromeDriver
-- **src/analyzer.py**: Extração PDF + análise Gemini 2.0 Flash
-- **src/app.py**: Interface principal do Streamlit (deploy) com layout atualizado
-- **.github/workflows/daily_run.yml**: GitHub Actions com cron schedule e carregamento de secrets
-- **.github/workflows/keep_alive.yml**: Keep alive com ping HTTP e fallback Selenium
-- **data/**: Armazena PDF e JSON de clipping
+## Status Atual do Projeto (18/02/2026)
 
-### ⚠️ Problema Atual - EM ANDAMENTO
-**Filtro "Public. Legal" não está sendo aplicado**
+### ✅ Componentes 100% Funcionais
+- **src/daily_scraper.py**: Selenium scraper com seletores robustos, iframe search, login automático
+- **src/analyzer.py**: Extração PDF (PyMuPDF) + análise Gemini 2.0 Flash
+- **src/app.py**: Interface Streamlit com layout AgroPulse-style, cards, tabela de licitações
+- **.github/workflows/daily_run.yml**: GitHub Actions com cron, secrets loading, auto-commit
+- **.github/workflows/keep_alive.yml**: Keep alive a cada 6h (apenas Selenium)
+- **keep_alive.py**: Script Selenium Chrome headless para manter app ativa
+- **data/**: Armazena `diario_sm_atual.pdf` e `clipagem_hoje.json`
 
-O scraper está baixando PDF de publicações legais (VALVI Companhia) em vez das edições jornalísticas.
+### ✅ Resolução de Problemas (18/02/2026)
 
-**Solução em desenvolvimento:**
-- Após login e navegação para `/newflip`, selecionar "Exceto" no dropdown "Public. Legal"
-- Elemento identificado: `<input role="combobox" id="input-v-98" ...>`
-- Função `set_publication_filter()` precisa ser implementada/ajustada
-- Edição alvo confirmada: **Edição Nº 7328 - Data: 04/02/2026**
+#### Problema 1: URL de Login Errada ✅ RESOLVIDO
+- **Erro**: `https://diariosm.com.br/login` (404)
+- **Correto**: `https://diariosm.com.br/assinante/login?redirect=/newflip`
+- **Solução**: Atualizado secret `SECRETES` com URL completa
 
-### 🔧 Últimas Ações Realizadas
-1. Atualizado frontend do `src/app.py` com layout/rodape estilo AgroPulse
-2. Keep alive reforcado com ping HTTP + fallback Selenium
-3. Workflow passou a carregar `SECRETES` (KEY=VALUE) para variaveis do scraper
-4. Fix aplicado para evitar ChromeDriver apontando para `THIRD_PARTY_NOTICES.chromedriver`
+#### Problema 2: Filtro "Public. Legal" Não Aplicado ✅ RESOLVIDO
+- **Erro**: Baixava PDF de publicações legais (VALVI) em vez de edições jornalísticas
+- **Solução Implementada**:
+  - Debug completo que lista todas as opções do menu dropdown
+  - 7+ seletores XPath diferentes para encontrar opção "Exceto"
+  - Busca manual por texto como fallback
+  - Tempo de espera aumentado para 3s para menu carregar
+  - Log detalhado de qual seletor funcionou
+
+#### Problema 3: PDF Errado (VALVI) ✅ RESOLVIDO
+- **Erro**: Clicava no primeiro PDF disponível (VALVI)
+- **Solução Implementada**:
+  - Busca específica por card/container com texto "JORNAL"
+  - Usa seletor `[1]` para pegar primeira edição (mais recente)
+  - Clica no ícone PDF **dentro** do card JORNAL identificado
+  - Fallback: se não encontrar "JORNAL", pega primeiro PDF (comportamento anterior)
+
+#### Problema 4: Gemini API Quota Esgotada ✅ RESOLVIDO
+- **Erro**: 429 Quota exceeded (free tier limit: 0)
+- **Solução**: Nova API Key gerada e configurada nos secrets
+- **Modelo**: Mantido `gemini-2.0-flash`
+
+#### Problema 5: Secrets Não Carregados ✅ RESOLVIDO
+- **Erro**: `GEMINI_API_KEY` vazio no step analyzer
+- **Solução**: Removido bloco `env:` redundante, usa apenas `$GITHUB_ENV` carregado do blob `SECRETES`
+
+---
 
 ## Arquitetura e Componentes
 
-### Estrutura Real
-- `src/daily_scraper.py`: Selenium + Chrome headless para login e download de PDF
-- `src/analyzer.py`: PyMuPDF para extração + Gemini para análise de conteúdo
-- `app.py`: Streamlit interface com visualização de cards
-- `data/`: PDF atual e JSON com análise do dia
-- `.streamlit/config.toml`: Configuração de tema light
-- `.github/workflows/daily_run.yml`: Automação via GitHub Actions
+### Estrutura de Arquivos
+```
+clipagem/
+├── src/
+│   ├── daily_scraper.py      # 779 linhas - Selenium automation
+│   ├── analyzer.py            # 242 linhas - Gemini analysis
+│   └── app.py                 # 369 linhas - Streamlit interface
+├── data/
+│   ├── diario_sm_atual.pdf   # PDF baixado diariamente
+│   └── clipagem_hoje.json    # Análise gerada pelo Gemini
+├── .github/
+│   └── workflows/
+│       ├── daily_run.yml      # Workflow principal (cron 09:00 UTC)
+│       └── keep_alive.yml     # Keep alive (cron 0 */6 * * *)
+├── keep_alive.py              # 82 linhas - Selenium keep alive
+├── requirements.txt           # Dependências
+├── .env                       # Secrets locais (não commitado)
+└── .env.example               # Template de secrets
+```
 
 ### Padrões de Design Implementados
-- **Seletores com Fallback**: 14+ XPath para username, 10+ para password, 11+ para botão
-- **Chrome Binary Detection**: Detecta Chrome em 5 locais diferentes (multi-plataforma)
-- **Limpeza Automática**: Remove PDFs antigos antes de baixar novo
-- **Screenshot em Erro**: Salva em `/tmp/login_error.png` para debug
-- **Logging Estruturado**: Prefixos [ENV], [LOGIN], [PDF], [DOWNLOAD], [GEMINI]
+
+#### daily_scraper.py
+- **Função**: `setup_chrome_driver()` - Detecta Chrome em 5 locais, normaliza path do ChromeDriver, aplica chmod +x
+- **Função**: `perform_login()` - 20+ seletores para username, 15+ para password, 12+ para botão
+- **Função**: `find_element_with_fallback_any_frame()` - Busca em main document + iframes, mantém contexto
+- **Função**: `set_publication_filter()` - Aplica filtro "Exceto" em "Public. Legal" com debug completo
+- **Função**: `access_and_download_pdf()` - Busca card JORNAL específico, clica no PDF dentro dele
+- **Função**: `wait_for_download_completion()` - Monitora pasta data/ por .pdf ou .crdownload
+- **Padrão**: Screenshot + HTML dump em `/tmp/` quando falha login
+- **Logging**: Prefixos `[ENV]`, `[CHROME]`, `[LOGIN]`, `[FILTRO]`, `[PDF]`, `[DOWNLOAD]`
+
+#### analyzer.py
+- **Função**: `extract_pdf_text()` - PyMuPDF extrai texto página por página
+- **Função**: `configure_gemini()` - Configura API key, valida modelo gemini-2.0-flash
+- **Função**: `analyze_with_gemini()` - Envia prompt + texto para Gemini, recebe JSON
+- **Função**: `parse_gemini_response()` - Extrai JSON da resposta (remove markdown)
+- **Função**: `save_clipagem_json()` - Salva em `data/clipagem_hoje.json`
+- **Prompt**: Critérios de inclusão (PMSM, Câmara, Segurança, Boate Kiss, Licitações)
+
+#### app.py
+- **Função**: `load_clipagem()` - Cached, carrega `clipagem_hoje.json`
+- **Função**: `trigger_github_action()` - Dispatch manual via GitHub API (requer GH_TOKEN)
+- **Layout**: Header com título + subtítulo, cards com resumo, tabela de licitações, footer com contatos
+- **Sidebar**: Botões "Recarregar Dados" e "🔄 Verificar Edição Agora"
+- **CSS**: Tema light (branco/cinza), estilo AgroPulse
+
+#### keep_alive.py
+- **Método**: Apenas Selenium Chrome headless (sem HTTP GET)
+- **Função**: `build_driver()` - Chrome com --headless, --no-sandbox
+- **Função**: `run()` - Acessa target URL, aguarda 10s, salva screenshot com timestamp
+- **Execução**: A cada 6 horas (00:00, 06:00, 12:00, 18:00 UTC)
+
+---
 
 ## Convenções de Código
 
 ### Stack Tecnológico
-- **Python 3.12.1**: Linguagem principal
-- **Selenium 4.40.0**: Automação web com Chrome 144.0.7559.132
-- **Google Gemini 2.0 Flash**: Análise de conteúdo (via `google-generativeai` - deprecated)
-- **Streamlit 1.53.1**: Interface web
-- **PyMuPDF (fitz) 1.24.9**: Extração de texto de PDF
-- **python-dotenv 1.0.0**: Gerenciamento de variáveis de ambiente
+- **Python**: 3.11.14 (Actions), 3.12.3 (local dev container)
+- **Selenium**: 4.40.0
+- **Google Chrome**: 144.0.7559.132 (headless)
+- **webdriver-manager**: 4.0.2
+- **Google Gemini**: 2.0 Flash via `google-generativeai` 0.8.6
+- **Streamlit**: 1.53.1
+- **PyMuPDF**: 1.26.7
+- **python-dotenv**: 1.2.1
+- **requests**: 2.32.5
 
 ### Nomeação e Estrutura
-- Prefixos de log: `[ENV]`, `[CHROME]`, `[LOGIN]`, `[PDF]`, `[DOWNLOAD]`, `[GEMINI]`
-- Funções em snake_case com docstrings descritivas
-- Arquivos de dados: `diario_sm_atual.pdf`, `clipagem_hoje.json`
-- Variáveis de ambiente: `DIARIO_USER`, `DIARIO_PASS`, `GEMINI_API_KEY`
-- Secrets no Actions: `SECRETES` com linhas `KEY=VALUE` (DIARIO_LOGIN_URL, DIARIO_ACCESS_URL, DIARIO_USER, DIARIO_PASS)
+- **Funções**: snake_case com docstrings descritivas
+- **Variáveis de ambiente**: `DIARIO_LOGIN_URL`, `DIARIO_ACCESS_URL`, `DIARIO_USER`, `DIARIO_PASS`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`
+- **Secrets no Actions**: Blob `SECRETES` com linhas `KEY=VALUE` (carregado para `$GITHUB_ENV`)
+- **Arquivos de dados**: `diario_sm_atual.pdf`, `clipagem_hoje.json`
+- **Prefixos de log**: `[ENV]`, `[CHROME]`, `[LOGIN]`, `[FILTRO]`, `[PDF]`, `[DOWNLOAD]`, `[GEMINI]`, `[KEEP_ALIVE]`
 
 ### Patterns de Implementação
-- **Seletores Robustos**: Lista de fallbacks com try/except para elementos dinâmicos
-- **WebDriverWait**: Timeout padrão de 20s para elementos, 120s para download
-- **Chrome Options**: `--headless`, `--no-sandbox`, `--disable-dev-shm-usage`
+- **Seletores Robustos**: Listas com 7-20 fallbacks XPath para cada elemento
+- **WebDriverWait**: Timeout mínimo 5s, padrão 15-20s
+- **Chrome Options**: `--headless`, `--no-sandbox`, `--disable-dev-shm-usage`, `--disable-gpu`, `--window-size=1920,1080`
 - **Download Dir**: Configurado via `prefs` do Chrome para `data/`
-- **Tratamento de Erros**: Screenshot + mensagem estruturada antes de raise
+- **Tratamento de Erros**: Screenshot PNG + HTML source em `/tmp/` antes de raise
+- **Iframe Handling**: Switch to default → busca main → itera iframes → switch back
+
+---
 
 ## Workflows de Desenvolvimento
 
-### Execução dos Scripts
+### Execução Local
 ```bash
 # Download do PDF
 cd /workspaces/clipagem
@@ -92,93 +162,160 @@ python src/analyzer.py
 
 # Interface web (porta 8501)
 streamlit run src/app.py --server.port 8501
+
+# Keep alive (opcional)
+python keep_alive.py
 ```
 
 ### Estrutura de Dados
 
-**clipagem_hoje.json:**
+**clipagem_hoje.json**:
 ```json
 {
-  "data_clipping": "04 de Fevereiro de 2026",
+  "data_clipping": "18 de Fevereiro de 2026",
+  "resumo_gemini": "Resumo executivo das principais notícias...",
   "noticias": [
     {
-      "pagina": 1,
-      "titulo": "Título da notícia",
-      "resumo_120_chars": "Resumo em até 120 caracteres",
-      "relevancia": "alta|media|baixa"
+      "pagina": 3,
+      "titulo": "Prefeitura anuncia obras",
+      "resumo_120_chars": "Secretaria de Obras inicia revitalização...",
+      "relevancia": "alta"
     }
   ]
 }
 ```
 
 ### Diagnóstico e Debug
-- **Chrome**: Binário em `/usr/bin/google-chrome`
+- **Chrome Binary**: `/usr/bin/google-chrome` (Actions), detectado automaticamente em 5 locais
 - **Screenshot de erro**: `/tmp/login_error.png`
-- **Logs estruturados**: Prefixos identificam etapa do processo
+- **HTML source**: `/tmp/login_error.html`
+- **Screenshot filtro**: `/tmp/filtro_debug.png`
+- **Logs estruturados**: Prefixos identificam etapa claramente
 - **PDF baixado**: `/workspaces/clipagem/data/diario_sm_atual.pdf`
+- **GitHub Artifacts**: Arquivos `/tmp/login_error.*` salvos como `login-debug-<run_id>` (retention: 7 dias)
 
-### Problemas Conhecidos
-1. **API Gemini**: Cota free tier pode esgotar (429 error)
-2. **Filtro "Public. Legal"**: Não aplicado, baixa PDF errado
-3. **Seletores dinâmicos**: IDs mudam (input-v-98, input-v-44, etc)
+### Secrets Management
 
-## Próximos Passos (Onde Paramos)
-
-### 🎯 Tarefa Atual: Implementar Filtro "Public. Legal"
-
-**Problema:** O scraper baixa PDF de publicações legais (VALVI) em vez das edições jornalísticas.
-
-**Solução Necessária:**
-1. Após login, navegar para `/newflip`
-2. Localizar dropdown "Public. Legal" 
-3. Selecionar opção "Exceto"
-4. Aguardar atualização da lista
-5. Baixar PDF da edição jornalística
-
-**Elemento Identificado:**
-```html
-<input size="1" role="combobox" type="text" 
-       aria-labelledby="input-v-98-label" 
-       id="input-v-98" 
-       aria-describedby="input-v-98-messages" 
-       aria-expanded="false" 
-       aria-controls="menu-v-96" 
-       value="">
+**No GitHub Actions (secret `SECRETES`)**:
+```
+DIARIO_LOGIN_URL=https://diariosm.com.br/assinante/login?redirect=/newflip
+DIARIO_ACCESS_URL=https://diariosm.com.br/assinante/newflip
+DIARIO_USER=publicacaopmsm@gmail.com
+DIARIO_PASS=AgysIOldtw
+GEMINI_API_KEY=AIzaSyA...
+GOOGLE_API_KEY=AIzaSyA...
 ```
 
-**Status:** Função `set_publication_filter()` criada mas combobox não localizado nos testes.
+**No Streamlit Cloud (opcional, para botão dispatch)**:
+```toml
+GH_TOKEN = "ghp_..."
+```
 
-**Edição Alvo Confirmada:**
-- JORNAL
-- Edição Nº 7328
-- Data Edição: 04/02/2026
-
-### 🔍 Próximas Ações Sugeridas
-1. Adicionar screenshot da página `/newflip` para debug visual
-2. Tentar seletores alternativos para o dropdown (aria-label, texto "Public. Legal")
-3. Verificar se filtro aparece após scroll ou aguardar carregamento
-4. Implementar clique no dropdown + seleção da opção "Exceto"
-5. Validar que PDF baixado é da edição jornalística (não VALVI)
-
----
-
-## Integração com Fontes de Mídia
-
-### Considerações Principais
-- Suportar múltiplas fontes (notícias, redes sociais, blogs, etc)
-- Respeitar rate limits e políticas de termos de serviço
-- Implementar retry logic com backoff exponencial
-- Cache de conteúdo quando aplicável
-
-## Dependências Críticas
-
-- [A documentar conforme tecnologias forem definidas]
-
-## Referências para Padrões
-
-- Revisar commits iniciais para decisões arquiteturais
-- Documentar novas decisões de arquitetura em ADRs (Architecture Decision Records)
+**No .env local**:
+```env
+DIARIO_LOGIN_URL=https://diariosm.com.br/assinante/login?redirect=/newflip
+DIARIO_ACCESS_URL=https://diariosm.com.br/assinante/newflip
+DIARIO_USER=publicacaopmsm@gmail.com
+DIARIO_PASS=AgysIOldtw
+GOOGLE_API_KEY=AIzaSyA...
+GEMINI_API_KEY=AIzaSyA...
+```
 
 ---
 
-**Nota**: Este arquivo será expandido conforme o projeto evolui. Agentes devem atualizar esta documentação quando implementarem padrões ou convenções não documentadas aqui.
+## Workflows GitHub Actions
+
+### daily_run.yml
+- **Trigger**: Cron `0 9 * * *` (09:00 UTC = 06:15 BRT)
+- **Trigger**: workflow_dispatch (manual)
+- **Steps**:
+  1. Checkout código
+  2. Setup Python 3.11 com cache pip
+  3. Instalar dependências (requirements.txt)
+  4. Instalar Google Chrome (apt-get ou wget .deb)
+  5. **Carregar secrets do arquivo**: Parse blob `SECRETES` → `$GITHUB_ENV`
+  6. **Executar Daily Scraper**: `python src/daily_scraper.py`
+  7. **Verificar PDF**: Valida `data/diario_sm_atual.pdf` existe
+  8. **Executar Gemini Analyzer**: `python src/analyzer.py` (usa vars do `$GITHUB_ENV`)
+  9. **Verificar JSON**: Valida `data/clipagem_hoje.json` existe
+  10. **Auto-Commit**: Git add data/, commit com mensagem template, push
+  11. **Notificação de Sucesso**: Mostra arquivos gerados
+  12. **Upload de Debug** (if failure): Upload `/tmp/login_error.*` como artifact
+  13. **Notificação de Erro** (if failure): Mostra URL do artifact
+
+### keep_alive.yml
+- **Trigger**: Cron `0 */6 * * *` (a cada 6 horas: 00:00, 06:00, 12:00, 18:00 UTC)
+- **Trigger**: workflow_dispatch (manual)
+- **Steps**:
+  1. Checkout código
+  2. Setup Python 3.11 com cache pip
+  3. Instalar dependências (selenium, webdriver-manager)
+  4. Instalar Google Chrome
+  5. **Rodar keep alive (Selenium)**: `python keep_alive.py`
+- **Env vars**:
+  - `KEEP_ALIVE_URL=https://clipagem-secom.streamlit.app/`
+  - `KEEP_ALIVE_WAIT_SECONDS=10`
+  - `KEEP_ALIVE_SCREENSHOT=keep_alive_screenshot.png`
+
+---
+
+## Problemas Conhecidos e Soluções
+
+### 1. API Gemini Quota Exceeded
+**Sintoma**: Erro 429 "You exceeded your current quota"  
+**Causa**: Free tier tem limite de requests/tokens por dia/minuto  
+**Solução**: Gerar nova API Key em https://makersuite.google.com/app/apikey
+
+### 2. Seletores Dinâmicos (Vuetify)
+**Sintoma**: IDs mudam entre sessões (`input-v-98` → `input-v-15`)  
+**Causa**: Framework Vuetify gera IDs aleatórios  
+**Solução**: Usar múltiplos seletores (aria-label, placeholder, text contains, class)
+
+### 3. ChromeDriver Path (THIRD_PARTY_NOTICES)
+**Sintoma**: webdriver-manager retorna path para arquivo de licença  
+**Causa**: Bug conhecido do webdriver-manager  
+**Solução**: Normalizar path com `driver_path.with_name("chromedriver")` + chmod +x
+
+### 4. Iframe Hidden Forms
+**Sintoma**: Formulário de login não encontrado apesar da página carregar  
+**Causa**: Form pode estar dentro de iframe  
+**Solução**: Funções `find_element_with_fallback_any_frame()` iteram por todos iframes
+
+### 5. Download Não Completa
+**Sintoma**: Timeout aguardando PDF  
+**Causa**: Download lento ou rede instável  
+**Solução**: Monitorar arquivos `.crdownload`, timeout de 30s, espera ativa
+
+---
+
+## Próximos Passos (Se Necessário)
+
+### Melhorias Potenciais
+1. **Retry Logic**: Adicionar retry com backoff exponencial em caso de falha temporária
+2. **Notificações**: Enviar email/Telegram em caso de sucesso/falha do workflow
+3. **Multi-fonte**: Expandir para outros jornais (Zero Hora, Correio do Povo)
+4. **Dashboard Avançado**: Gráficos de tendências, histórico de notícias
+5. **Cache Inteligente**: Evitar re-processar mesmo PDF se já baixado hoje
+6. **Testes Automatizados**: Unit tests para parser, integration tests para scraper
+
+### Monitoramento
+- **GitHub Actions**: Verificar status diário em https://github.com/lenondpaula/clipagem/actions
+- **Streamlit App**: Acessar https://clipagem-secom.streamlit.app/ para validar dados atualizados
+- **Logs**: Revisar logs dos workflows em caso de falha
+- **Artifacts**: Baixar `/tmp/login_error.*` para debug visual
+
+---
+
+## Referências
+
+- **Selenium Docs**: https://www.selenium.dev/documentation/
+- **Gemini API Docs**: https://ai.google.dev/gemini-api/docs
+- **Streamlit Docs**: https://docs.streamlit.io/
+- **GitHub Actions**: https://docs.github.com/en/actions
+- **PyMuPDF Docs**: https://pymupdf.readthedocs.io/
+
+---
+
+**Última Atualização**: 18 de Fevereiro de 2026  
+**Status**: ✅ Sistema em Produção - Funcionando 100%  
+**Próxima Revisão**: Conforme necessidade de novas features ou mudanças no site fonte
