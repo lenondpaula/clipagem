@@ -536,17 +536,32 @@ def set_publication_filter(driver):
         # Clicar no dropdown para abrir as opções
         driver.execute_script("arguments[0].click();", dropdown_input)
         print("[FILTRO] Dropdown clicado, aguardando opções...")
-        time.sleep(3)
+        time.sleep(5)  # Aumentar tempo de espera
+        
+        # Tentar scroll ou foco para forçar carregamento
+        try:
+            driver.execute_script("arguments[0].scrollIntoView();", dropdown_input)
+            time.sleep(2)
+        except:
+            pass
         
         # Debug: Listar todas as opções disponíveis
         try:
-            all_options = driver.find_elements(By.XPATH, "//*[@role='option']")
+            all_options = driver.find_elements(By.XPATH, "//*[@role='option'] | //div[@role='listitem'] | //div[contains(@class, 'v-list-item')]")
             print(f"[FILTRO] Total de opções no menu: {len(all_options)}")
             for idx, opt in enumerate(all_options):
                 opt_text = opt.text.strip()
                 print(f"[FILTRO]   Opção {idx}: '{opt_text}'")
         except Exception as e:
             print(f"[FILTRO] Erro ao listar opções: {e}")
+        
+        # Se ainda não há opções, tentar clicar novamente
+        if len(all_options) == 0:
+            print("[FILTRO] Nenhuma opção encontrada, tentando clicar novamente...")
+            driver.execute_script("arguments[0].click();", dropdown_input)
+            time.sleep(3)
+            all_options = driver.find_elements(By.XPATH, "//*[@role='option'] | //div[@role='listitem'] | //div[contains(@class, 'v-list-item')]")
+            print(f"[FILTRO] Após segundo clique - Total de opções: {len(all_options)}")
         
         # Seletores para encontrar a opção "Exceto"
         exceto_selectors = [
@@ -651,8 +666,8 @@ def access_and_download_pdf(driver):
         try:
             all_cards = driver.find_elements(By.XPATH, "//div[contains(@class, 'v-card') or contains(@class, 'card')]")
             print(f"[PDF] Total de cards encontrados: {len(all_cards)}")
-            for idx, card in enumerate(all_cards[:5]):  # Mostrar apenas os primeiros 5
-                card_text = card.text[:100]  # Limitar texto para log
+            for idx, card in enumerate(all_cards[:10]):  # Mostrar os primeiros 10
+                card_text = card.text.replace('\n', ' | ')[:200]  # Limitar texto para log
                 print(f"[PDF]   Card {idx}: '{card_text}...'")
         except Exception as e:
             print(f"[PDF] Erro ao listar cards: {e}")
@@ -665,6 +680,10 @@ def access_and_download_pdf(driver):
             "(//*[text()='JORNAL']/ancestor::div[contains(@class, 'v-card') or contains(@class, 'card')])[1]",
             # Qualquer container com "JORNAL" como primeira palavra
             "(//div[contains(text(), 'JORNAL') and not(contains(text(), 'VALVI'))])[1]",
+            # Buscar por "DIÁRIO OFICIAL" ou variações
+            "//div[contains(., 'DIÁRIO') and not(contains(., 'VALVI'))][1]",
+            # Buscar por cards que não contenham VALVI
+            "(//div[contains(@class, 'v-card') and not(contains(., 'VALVI')) and not(contains(., 'FOLHETO'))])[1]",
         ]
         
         for selector in jornal_selectors:
@@ -714,6 +733,17 @@ def access_and_download_pdf(driver):
             except Exception as e:
                 print("[PDF] ERRO: Nenhum ícone PDF encontrado!")
                 raise Exception("Nenhum ícone PDF encontrado na página")
+        
+        # Estratégia alternativa: se o filtro falhou, tentar o segundo PDF (pode ser JORNAL)
+        if not jornal_card and pdf_icon:
+            try:
+                all_pdf_icons = driver.find_elements(By.XPATH, "//*[contains(@class, 'mdi-file-pdf-box')]")
+                if len(all_pdf_icons) > 1:
+                    print("[PDF] ⚠️ Filtro falhou, tentando segundo PDF (possivelmente JORNAL)...")
+                    pdf_icon = all_pdf_icons[1]  # Segundo PDF
+                    print("[PDF] Segundo ícone PDF selecionado")
+            except Exception as e:
+                print(f"[PDF] Erro ao tentar segundo PDF: {e}")
         
         # Validação final: verificar se estamos baixando algo que parece JORNAL
         try:
@@ -785,8 +815,8 @@ def validate_downloaded_file(filepath):
     print(f"[VALIDAÇÃO] Verificando arquivo: {filename}")
     
     # Regras de validação
-    valid_indicators = ["jornal"]
-    invalid_indicators = ["valvi", "folheto", "classificado", "publicacao", "legal"]
+    valid_indicators = ["jornal", "diario", "oficial"]
+    invalid_indicators = ["valvi", "folheto", "classificado", "publicacao", "legal", "lei", "decreto"]
     
     # Verificar indicadores válidos
     has_valid = any(indicator in filename for indicator in valid_indicators)
