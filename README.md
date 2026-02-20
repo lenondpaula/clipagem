@@ -5,7 +5,7 @@ Sistema automatizado de clipping diário do **Diário de Santa Maria**, com aná
 [![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=flat&logo=streamlit&logoColor=white)](https://clipagem-secom.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python-3.11-blue?style=flat&logo=python&logoColor=white)](https://www.python.org/)
 [![Selenium](https://img.shields.io/badge/Selenium-4.40.0-green?style=flat&logo=selenium&logoColor=white)](https://www.selenium.dev/)
-[![Gemini](https://img.shields.io/badge/Google_Gemini-2.0_Flash-orange?style=flat&logo=google&logoColor=white)](https://ai.google.dev/)
+[![Groq](https://img.shields.io/badge/Groq-Mixtral_8x7B-orange?style=flat&logo=ai&logoColor=white)](https://groq.com/)
 
 🔗 **App em Produção**: https://clipagem-secom.streamlit.app/
 
@@ -16,7 +16,7 @@ Sistema automatizado de clipping diário do **Diário de Santa Maria**, com aná
 **Clipagem Digital** automatiza o processo de monitoramento diário do jornal **Diário de Santa Maria**, extraindo notícias relevantes para a **Prefeitura Municipal de Santa Maria (PMSM)** através de:
 
 - 🤖 **Download Automatizado**: Selenium baixa PDF diariamente (06:15 BRT)
-- 🧠 **Análise com IA**: Google Gemini 2.0 Flash identifica notícias relevantes
+- 🧠 **Análise com IA**: Groq Mixtral 8x7B identifica notícias relevantes
 - 📊 **Dashboard Web**: Interface Streamlit com cards, resumos e licitações
 - ⏰ **Execução Programada**: GitHub Actions executa automaticamente todos os dias
 
@@ -32,7 +32,7 @@ Sistema automatizado de clipping diário do **Diário de Santa Maria**, com aná
 
 ### 🧠 Análise Inteligente
 - Extração de texto do PDF via PyMuPDF
-- Análise com Google Gemini 2.0 Flash
+- Análise com Groq Mixtral 8x7B
 - Identificação de notícias relevantes:
   - Prefeitura de Santa Maria
   - Câmara de Vereadores
@@ -75,9 +75,9 @@ Sistema automatizado de clipping diário do **Diário de Santa Maria**, com aná
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│             src/analyzer.py (Gemini 2.0 Flash)               │
+│             src/analyzer.py (Groq Mixtral 8x7B)              │
 │  • Extração de texto do PDF (PyMuPDF)                       │
-│  • Análise com Gemini API                                    │
+│  • Análise com Groq API                                     │
 │  • Geração de clipagem_hoje.json                            │
 └─────────────────────────────────────────────────────────────┘
                               │
@@ -99,7 +99,7 @@ Sistema automatizado de clipping diário do **Diário de Santa Maria**, com aná
 clipagem/
 ├── src/
 │   ├── daily_scraper.py      # Selenium: login + download PDF
-│   ├── analyzer.py            # Gemini: análise de conteúdo
+│   ├── analyzer.py            # Groq: análise de conteúdo
 │   └── app.py                 # Streamlit: interface web
 ├── data/
 │   ├── diario_sm_atual.pdf   # PDF baixado daily_scraper
@@ -122,7 +122,7 @@ clipagem/
 | **Linguagem** | Python | 3.11+ |
 | **Web Scraping** | Selenium | 4.40.0 |
 | **Browser** | Google Chrome | Headless |
-| **Análise IA** | Google Gemini | 2.0 Flash |
+| **Análise IA** | Groq | Mixtral 8x7B |
 | **PDF Processing** | PyMuPDF (fitz) | 1.24.9 |
 | **Interface Web** | Streamlit | 1.53.1 |
 | **Automação** | GitHub Actions | - |
@@ -141,8 +141,7 @@ DIARIO_LOGIN_URL=https://diariosm.com.br/assinante/login?redirect=/newflip
 DIARIO_ACCESS_URL=https://diariosm.com.br/assinante/newflip
 DIARIO_USER=seu_email@exemplo.com
 DIARIO_PASS=sua_senha
-GEMINI_API_KEY=sua_chave_api_gemini
-GOOGLE_API_KEY=sua_chave_api_gemini
+GROQ_API_KEY=sua_chave_api_groq
 ```
 
 ### Secrets do Streamlit Cloud
@@ -205,7 +204,7 @@ cp .env.example .env
 # 1. Download do PDF
 python src/daily_scraper.py
 
-# 2. Análise com Gemini
+# 2. Análise com Groq
 python src/analyzer.py
 
 # 3. Interface Streamlit
@@ -246,7 +245,7 @@ Todos os scripts usam prefixos para facilitar diagnóstico:
 - `[LOGIN]` - Processo de autenticação
 - `[FILTRO]` - Aplicação de filtros
 - `[PDF]` - Download do PDF
-- `[GEMINI]` - Análise com IA
+- `[GROQ]` - Análise com IA
 
 ### Artifacts de Debug
 Em caso de erro, o workflow salva:
@@ -288,10 +287,10 @@ Este projeto é de uso interno da **Prefeitura Municipal de Santa Maria**.
 
 ✅ **Em Produção** - Sistema funcionando diariamente desde fevereiro de 2026
 
-### Últimas Atualizações (18/02/2026)
-- ✅ Filtro "Public. Legal" implementado com 7+ seletores
-- ✅ Seleção automática de edição JORNAL (não VALVI)
-- ✅ Busca pela edição mais recente
-- ✅ Nova API Key do Gemini configurada
-- ✅ Keep alive otimizado (apenas Selenium, a cada 6h)
-- ✅ Upload de debug artifacts em caso de erro
+### Últimas Atualizações (20/02/2026)
+- ✅ **Migração para Groq API** - Substituição do Gemini por Mixtral 8x7B
+- ✅ **Correção crítica keep-alive** - Bug THIRD_PARTY_NOTICES resolvido
+- ✅ **Filtragem VALVI/JORNAL aprimorada** - Detecção robusta de publicações
+- ✅ **Workflows otimizados** - Timeouts e verificações adicionais
+- ✅ **Validação pós-download** - Remove automaticamente arquivos inválidos
+- ✅ **User-agent real** - Simulação de navegador legítimo no keep-alive
