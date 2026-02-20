@@ -1,5 +1,5 @@
 """
-Analisador de Clipping - Integração com Google Gemini 2.0 Flash
+Analisador de Clipping - Integração com Groq API
 Extrai texto de PDF do Diário Oficial e realiza análise inteligente de conteúdo relevante
 """
 
@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from dotenv import load_dotenv
 import fitz  # pymupdf
-import google.generativeai as genai
+from groq import Groq
 
 
 # ==================== CARREGAMENTO DE VARIÁVEIS DE AMBIENTE ====================
@@ -26,8 +26,11 @@ else:
 # ==================== CONFIGURAÇÕES ====================
 PDF_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "diario_sm_atual.pdf")
 OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "clipagem_hoje.json")
-GEMINI_MODEL = "gemini-2.0-flash"
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GROQ_MODEL = "mixtral-8x7b-32768"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+
+# Cliente Groq global
+groq_client = None
 
 # Prompt de análise de clipping - O cérebro da automação
 CLIPAGEM_PROMPT = """Você é um analista de mídia da Prefeitura de Santa Maria. Analise o texto do jornal Diário de Santa Maria.
@@ -80,42 +83,49 @@ def extract_pdf_text():
         
         return extracted_text
         
+        return extracted_text
+        
     except Exception as e:
         print(f"[PDF] ERRO ao extrair texto: {e}")
         raise
 
 
-# ==================== CONFIGURAÇÃO GEMINI ====================
-def configure_gemini():
-    """Configura cliente do Google Gemini"""
-    print(f"[GEMINI] Configurando API do Gemini 2.0 Flash...")
+# ==================== CONFIGURAÇÃO GROQ ====================
+def configure_groq():
+    """Configura cliente do Groq"""
+    print(f"[GROQ] Configurando API do Groq...")
     
-    if not GEMINI_API_KEY:
-        raise ValueError("Variável de ambiente GEMINI_API_KEY não configurada")
+    if not GROQ_API_KEY:
+        raise ValueError("Variável de ambiente GROQ_API_KEY não configurada")
     
-    genai.configure(api_key=GEMINI_API_KEY)
-    print(f"[GEMINI] API configurada com sucesso")
+    global groq_client
+    groq_client = Groq(api_key=GROQ_API_KEY)
+    print(f"[GROQ] API configurada com sucesso")
 
 
-# ==================== ANÁLISE COM GEMINI ====================
-def analyze_with_gemini(extracted_text):
-    """Envia texto ao Gemini para análise de clipping"""
-    print(f"[GEMINI] Iniciando análise com modelo {GEMINI_MODEL}...")
+# ==================== ANÁLISE COM GROQ ====================
+def analyze_with_groq(extracted_text):
+    """Envia texto ao Groq para análise de clipping"""
+    print(f"[GROQ] Iniciando análise com modelo {GROQ_MODEL}...")
     
     try:
         # Preparar prompt com o texto extraído
         prompt = CLIPAGEM_PROMPT.format(texto_extraido=extracted_text)
         
-        # Inicializar modelo
-        model = genai.GenerativeModel(GEMINI_MODEL)
-        print(f"[GEMINI] Modelo {GEMINI_MODEL} carregado")
+        print(f"[GROQ] Enviando texto para análise ({len(extracted_text)} caracteres)...")
         
         # Enviar para análise
-        print(f"[GEMINI] Enviando texto para análise ({len(extracted_text)} caracteres)...")
-        response = model.generate_content(prompt)
+        response = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,  # Baixa temperatura para consistência
+            max_tokens=4000   # Limite de tokens para resposta
+        )
         
-        result_text = response.text
-        print(f"[GEMINI] Resposta recebida ({len(result_text)} caracteres)")
+        result_text = response.choices[0].message.content
+        print(f"[GROQ] Resposta recebida ({len(result_text)} caracteres)")
         
         return result_text
         
@@ -125,7 +135,7 @@ def analyze_with_gemini(extracted_text):
 
 
 # ==================== LIMPEZA E PROCESSAMENTO ====================
-def clean_gemini_response(response_text):
+def clean_groq_response(response_text):
     """Remove marcações de Markdown da resposta do Gemini"""
     print(f"[CLEANUP] Limpando resposta do Gemini...")
     
@@ -190,7 +200,7 @@ def save_json_output(json_obj):
 def main():
     """Função principal do analisador"""
     print("=" * 70)
-    print("INICIANDO ANALISADOR DE CLIPPING - GEMINI 2.0 FLASH")
+    print("INICIANDO ANALISADOR DE CLIPPING - GROQ MIXTRAL")
     print("=" * 70)
     
     try:
@@ -199,20 +209,20 @@ def main():
         print("-" * 70)
         extracted_text = extract_pdf_text()
         
-        # Etapa 2: Configurar Gemini
-        print("\n[ETAPA 2] Configuração do Gemini")
+        # Etapa 2: Configurar Groq
+        print("\n[ETAPA 2] Configuração do Groq")
         print("-" * 70)
-        configure_gemini()
+        configure_groq()
         
-        # Etapa 3: Análise com Gemini
-        print("\n[ETAPA 3] Análise com Gemini")
+        # Etapa 3: Análise com Groq
+        print("\n[ETAPA 3] Análise com Groq")
         print("-" * 70)
-        gemini_response = analyze_with_gemini(extracted_text)
+        groq_response = analyze_with_groq(extracted_text)
         
         # Etapa 4: Limpeza da resposta
         print("\n[ETAPA 4] Limpeza de Markdown")
         print("-" * 70)
-        cleaned_response = clean_gemini_response(gemini_response)
+        cleaned_response = clean_groq_response(groq_response)
         
         # Etapa 5: Validação JSON
         print("\n[ETAPA 5] Validação JSON")

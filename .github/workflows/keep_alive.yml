@@ -36,11 +36,26 @@ jobs:
             sudo apt-get install -y /tmp/google-chrome.deb
           fi
           google-chrome --version
+          
+          # Testar se Chrome funciona
+          google-chrome --headless --no-sandbox --disable-gpu --disable-dev-shm-usage --dump-dom https://www.google.com | head -20
 
       - name: 🔁 Rodar keep alive (Selenium)
         env:
           KEEP_ALIVE_URL: "https://clipagem-secom.streamlit.app/"
-          KEEP_ALIVE_WAIT_SECONDS: "10"
+          KEEP_ALIVE_WAIT_SECONDS: "15"
           KEEP_ALIVE_SCREENSHOT: "keep_alive_screenshot.png"
         run: |
-          python keep_alive.py
+          echo "Iniciando keep-alive para: $KEEP_ALIVE_URL"
+          
+          # Executar com timeout para evitar travamentos
+          timeout 300 python keep_alive.py
+          
+          # Verificar se screenshot foi criado
+          if ls keep_alive_screenshot-*.png 1> /dev/null 2>&1; then
+            echo "✅ Screenshot criado com sucesso"
+            ls -la keep_alive_screenshot-*.png
+          else
+            echo "❌ Nenhum screenshot encontrado"
+            exit 1
+          fi

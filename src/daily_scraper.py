@@ -600,6 +600,22 @@ def set_publication_filter(driver):
         print("[FILTRO] Opção 'Exceto' selecionada!")
         
         # Aguardar filtro ser aplicado
+        time.sleep(2)
+        
+        # Validação: Verificar se filtro foi aplicado
+        try:
+            current_value = dropdown_input.get_attribute("value")
+            print(f"[FILTRO] Valor atual do dropdown: '{current_value}'")
+            if "exceto" in current_value.lower():
+                print("[FILTRO] ✓ Filtro aplicado com sucesso!")
+            else:
+                print("[FILTRO] ⚠️ AVISO: Filtro pode não ter sido aplicado corretamente")
+        except Exception as e:
+            print(f"[FILTRO] Não foi possível validar filtro: {e}")
+        
+        print("[FILTRO] Filtro 'Public. Legal' configurado como 'Exceto'")
+        
+        # Aguardar filtro ser aplicado
         time.sleep(3)
         print("[FILTRO] Filtro aplicado com sucesso - exibindo apenas edições jornalísticas")
         
@@ -625,49 +641,94 @@ def access_and_download_pdf(driver):
         # Aguardar após aplicar filtro para lista atualizar
         time.sleep(3)
         
-        # Estratégia: Procurar pelo card/item que contenha "JORNAL" e seja o primeiro (mais recente)
-        print("[PDF] Procurando primeira edição do tipo JORNAL...")
+        # Estratégia aprimorada: Procurar especificamente por "JORNAL" (não VALVI, FOLHETO, etc.)
+        print("[PDF] Procurando primeira edição do tipo JORNAL (excluindo VALVI, FOLHETO, CLASSIFICADOS)...")
         
         jornal_card = None
-        card_selectors = [
-            # Procurar por card/container que contenha "JORNAL" no texto
-            "//div[contains(., 'JORNAL') and contains(@class, 'v-card')][1]",
-            "//div[contains(., 'JORNAL') and contains(@class, 'card')][1]",
-            "(//div[contains(., 'JORNAL')])[1]",
-            # Procurar por qualquer elemento que tenha "JORNAL" como texto direto
-            "(//*[text()='JORNAL']/ancestor::div[contains(@class, 'v-card')])[1]",
-            "(//*[text()='JORNAL']/ancestor::*[contains(@class, 'card')])[1]",
+        pdf_icon = None
+        
+        # Primeiro, listar todos os cards/itens disponíveis para debug
+        try:
+            all_cards = driver.find_elements(By.XPATH, "//div[contains(@class, 'v-card') or contains(@class, 'card')]")
+            print(f"[PDF] Total de cards encontrados: {len(all_cards)}")
+            for idx, card in enumerate(all_cards[:5]):  # Mostrar apenas os primeiros 5
+                card_text = card.text[:100]  # Limitar texto para log
+                print(f"[PDF]   Card {idx}: '{card_text}...'")
+        except Exception as e:
+            print(f"[PDF] Erro ao listar cards: {e}")
+        
+        # Buscar especificamente por elementos que contenham "JORNAL" (não VALVI)
+        jornal_selectors = [
+            # Card que contenha "JORNAL" mas não contenha "VALVI"
+            "//div[contains(., 'JORNAL') and not(contains(., 'VALVI')) and not(contains(., 'FOLHETO')) and not(contains(., 'CLASSIFICADOS'))][1]",
+            # Elemento com texto exato "JORNAL"
+            "(//*[text()='JORNAL']/ancestor::div[contains(@class, 'v-card') or contains(@class, 'card')])[1]",
+            # Qualquer container com "JORNAL" como primeira palavra
+            "(//div[contains(text(), 'JORNAL') and not(contains(text(), 'VALVI'))])[1]",
         ]
         
-        for selector in card_selectors:
+        for selector in jornal_selectors:
             try:
                 jornal_card = driver.find_element(By.XPATH, selector)
-                print(f"[PDF] Card JORNAL encontrado com: {selector}")
-                break
-            except:
+                card_text = jornal_card.text[:200]
+                print(f"[PDF] Card JORNAL encontrado: '{card_text}'")
+                
+                # Verificar se não é VALVI
+                if "valvi" in card_text.lower():
+                    print("[PDF] ⚠️ Card encontrado contém VALVI, ignorando...")
+                    continue
+                    
+                # Procurar ícone PDF dentro do card
+                try:
+                    pdf_icon = jornal_card.find_element(By.XPATH, 
+                        ".//*[contains(@class, 'mdi-file-pdf-box') or contains(@class, 'pdf')]")
+                    print("[PDF] ✓ Ícone PDF encontrado no card JORNAL")
+                    break
+                except:
+                    print("[PDF] PDF não encontrado neste card, tentando próximo...")
+                    continue
+                    
+            except Exception as e:
+                print(f"[PDF] Seletor falhou: {selector} - {e}")
                 continue
         
-        # Se encontrou o card JORNAL, procurar o ícone PDF dentro dele
-        if jornal_card:
-            print("[PDF] Procurando ícone PDF dentro do card JORNAL...")
+        # Se não encontrou card JORNAL específico, tentar abordagem mais ampla
+        if not pdf_icon:
+            print("[PDF] Buscando ícones PDF próximos a texto 'JORNAL'...")
             try:
-                pdf_icon = jornal_card.find_element(By.XPATH, 
-                    ".//*[contains(@class, 'mdi-file-pdf-box')]")
-                print("[PDF] Ícone de PDF encontrado no card JORNAL")
-            except:
-                print("[PDF] AVISO: Ícone PDF não encontrado no card, buscando globalmente...")
-                jornal_card = None
+                # Encontrar texto "JORNAL" e buscar PDF próximo
+                jornal_text = driver.find_element(By.XPATH, "//*[contains(text(), 'JORNAL') and not(contains(text(), 'VALVI'))]")
+                # Buscar PDF no mesmo container pai
+                parent = jornal_text.find_element(By.XPATH, "ancestor::div[1]")
+                pdf_icon = parent.find_element(By.XPATH, ".//*[contains(@class, 'mdi-file-pdf-box')]")
+                print("[PDF] ✓ PDF encontrado próximo a texto JORNAL")
+            except Exception as e:
+                print(f"[PDF] Busca por proximidade falhou: {e}")
         
-        # Fallback: Se não encontrou card JORNAL, pegar o PRIMEIRO ícone PDF (mais arriscado)
-        if not jornal_card:
-            print("[PDF] Buscando primeiro ícone PDF disponível (fallback)...")
-            pdf_icon = WebDriverWait(driver, PDF_WAIT_TIMEOUT).until(
-                EC.element_to_be_clickable((
-                    By.XPATH,
-                    "//*[contains(@class, 'mdi-file-pdf-box')][1]"
-                ))
-            )
-            print("[PDF] Ícone de PDF encontrado (primeiro disponível)")
+        # Último fallback: primeiro PDF disponível (mas com aviso)
+        if not pdf_icon:
+            print("[PDF] ⚠️ FALLBACK: Usando primeiro ícone PDF disponível (risco de não ser JORNAL)")
+            try:
+                pdf_icon = driver.find_element(By.XPATH, "//*[contains(@class, 'mdi-file-pdf-box')][1]")
+                print("[PDF] Primeiro ícone PDF encontrado (fallback)")
+            except Exception as e:
+                print("[PDF] ERRO: Nenhum ícone PDF encontrado!")
+                raise Exception("Nenhum ícone PDF encontrado na página")
+        
+        # Validação final: verificar se estamos baixando algo que parece JORNAL
+        try:
+            # Tentar encontrar texto próximo ao ícone
+            parent_container = pdf_icon.find_element(By.XPATH, "ancestor::div[1]")
+            container_text = parent_container.text.lower()
+            
+            if "jornal" in container_text and "valvi" not in container_text:
+                print("[PDF] ✓ Validação: Parece ser um arquivo JORNAL válido")
+            elif "valvi" in container_text:
+                print("[PDF] ⚠️ AVISO: Possível arquivo VALVI detectado!")
+            else:
+                print("[PDF] ? Validação inconclusiva, prosseguindo...")
+        except:
+            print("[PDF] Não foi possível validar conteúdo do arquivo")
         
         # Clicar no ícone para iniciar download
         driver.execute_script("arguments[0].click();", pdf_icon)
@@ -696,12 +757,53 @@ def wait_for_download_completion():
             continue
         
         if pdf_files:
-            print(f"[DOWNLOAD] PDF detectado, download concluído!")
-            return pdf_files[0]
+            downloaded_file = pdf_files[0]
+            print(f"[DOWNLOAD] PDF detectado: {downloaded_file}")
+            
+            # Validação do arquivo baixado
+            if validate_downloaded_file(downloaded_file):
+                print(f"[DOWNLOAD] ✓ Arquivo validado com sucesso!")
+                return downloaded_file
+            else:
+                print(f"[DOWNLOAD] ✗ Arquivo inválido detectado, removendo...")
+                try:
+                    os.remove(downloaded_file)
+                    print(f"[DOWNLOAD] Arquivo removido: {downloaded_file}")
+                except Exception as e:
+                    print(f"[DOWNLOAD] Erro ao remover arquivo: {e}")
+                raise Exception("Arquivo baixado não é um JORNAL válido")
         
         time.sleep(1)
     
-    raise TimeoutError(f"Download não foi completado em {DOWNLOAD_TIMEOUT} segundos")
+    raise Exception(f"Timeout: Download não concluído em {DOWNLOAD_TIMEOUT} segundos")
+
+
+def validate_downloaded_file(filepath):
+    """Valida se o arquivo baixado é um JORNAL válido (não VALVI, FOLHETO, etc.)"""
+    filename = os.path.basename(filepath).lower()
+    
+    print(f"[VALIDAÇÃO] Verificando arquivo: {filename}")
+    
+    # Regras de validação
+    valid_indicators = ["jornal"]
+    invalid_indicators = ["valvi", "folheto", "classificado", "publicacao", "legal"]
+    
+    # Verificar indicadores válidos
+    has_valid = any(indicator in filename for indicator in valid_indicators)
+    
+    # Verificar indicadores inválidos
+    has_invalid = any(indicator in filename for indicator in invalid_indicators)
+    
+    if has_valid and not has_invalid:
+        print("[VALIDAÇÃO] ✓ Arquivo parece ser JORNAL válido")
+        return True
+    elif has_invalid:
+        print(f"[VALIDAÇÃO] ✗ Arquivo contém indicador inválido: {filename}")
+        return False
+    else:
+        print(f"[VALIDAÇÃO] ? Arquivo sem indicadores claros: {filename}")
+        # Se não tem indicadores claros, assumir válido por enquanto
+        return True
 
 
 def rename_pdf_file(old_path):
