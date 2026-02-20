@@ -37,12 +37,12 @@ jobs:
             pip install -r requirements.txt
           else
             echo "[WARN] requirements.txt não encontrado, instalando manualmente..."
-            pip install selenium webdriver-manager google-generativeai pymupdf streamlit
+            pip install selenium webdriver-manager groq pymupdf streamlit requests python-dotenv
           fi
           
           echo "[INFO] Verificando instalações..."
           python -c "import selenium; print(f'✓ selenium: {selenium.__version__}')"
-          python -c "import google.generativeai; print('✓ google.generativeai')"
+          python -c "import groq; print('✓ groq')"
           python -c "import fitz; print('✓ pymupdf')"
           python -c "import streamlit; print('✓ streamlit')"
 
@@ -94,7 +94,7 @@ jobs:
           fi
 
       # ==================== EXECUTAR ANALYZER ====================
-      - name: 🧠 Executar Gemini Analyzer
+      - name: 🧠 Executar Groq Analyzer
         run: |
           echo "[RUN] Iniciando analyzer.py..."
           python src/analyzer.py
