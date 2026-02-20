@@ -14,6 +14,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
@@ -38,6 +39,7 @@ DOWNLOAD_TIMEOUT = 30
 LOGIN_TIMEOUT = 15
 PDF_WAIT_TIMEOUT = 20
 PDF_FILENAME = "diario_sm_atual.pdf"
+APPLY_PUBLIC_LEGAL_FILTER = os.getenv("APPLY_PUBLIC_LEGAL_FILTER", "false").strip().lower() in ("1", "true", "yes", "on")
 
 DIARIO_LOGIN_URL = os.getenv("DIARIO_LOGIN_URL", "")
 DIARIO_ACCESS_URL = os.getenv("DIARIO_ACCESS_URL", "")
@@ -664,6 +666,110 @@ def _parse_card_edition_number(text):
         return None
 
 
+def search_edition_by_name(driver, edition_name="JORNAL"):
+    """Aplica busca pelo nome da edição para reduzir ruído de resultados."""
+    print(f"[PDF] Aplicando busca por nome de edição: {edition_name}")
+
+    search_selectors = [
+        "//input[contains(@placeholder, 'Pesquisar nome edição')]",
+        "//input[contains(@placeholder, 'nome edição')]",
+        "//input[contains(@aria-label, 'nome edição')]",
+    ]
+
+    search_input = None
+    for selector in search_selectors:
+        try:
+            search_input = WebDriverWait(driver, 8).until(
+                EC.presence_of_element_located((By.XPATH, selector))
+            )
+            if search_input and search_input.is_displayed():
+                break
+        except Exception:
+            continue
+
+    if not search_input:
+        print("[PDF] AVISO: Campo de busca por nome de edição não encontrado")
+        return False
+
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", search_input)
+    time.sleep(0.5)
+    search_input.clear()
+    search_input.send_keys(edition_name)
+    search_input.send_keys(Keys.ENTER)
+    time.sleep(2)
+    print("[PDF] Busca por nome aplicada")
+    return True
+
+
+def get_jornal_candidates(driver):
+    """Coleta cards válidos de JORNAL com ícone PDF clicável."""
+    card_xpath = "//div[contains(@class,'suita-block-home') and contains(@class,'v-card')]"
+
+    try:
+        WebDriverWait(driver, 12).until(
+            EC.presence_of_all_elements_located((By.XPATH, card_xpath))
+        )
+    except Exception:
+        pass
+
+    candidate_cards = driver.find_elements(By.XPATH, card_xpath)
+    print(f"[PDF] Cards do grid encontrados: {len(candidate_cards)}")
+
+    jornal_candidates = []
+    for idx, card in enumerate(candidate_cards):
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", card)
+        except Exception:
+            pass
+
+        card_text = (card.text or "").strip()
+        if not card_text:
+            card_text = (card.get_attribute("innerText") or "").strip()
+        card_text_lower = card_text.lower()
+
+        if not card_text:
+            continue
+        if "jornal" not in card_text_lower:
+            continue
+        if any(tag in card_text_lower for tag in ["valvi", "folheto", "classificados", "classificado"]):
+            continue
+
+        edition_number = _parse_card_edition_number(card_text)
+        edition_date = _parse_card_date_ddmmyyyy(card_text)
+
+        pdf_icon = None
+        icon_selectors = [
+            ".//i[contains(@class,'mdi-file-pdf-box') and contains(@class,'v-icon--clickable')]",
+            ".//*[@title='Visualizar PDF']",
+            ".//*[@title='Visualizar PDF' or contains(@title, 'PDF')]",
+        ]
+        for icon_selector in icon_selectors:
+            try:
+                pdf_icon = card.find_element(By.XPATH, icon_selector)
+                if pdf_icon.is_displayed():
+                    break
+            except Exception:
+                continue
+
+        if not pdf_icon:
+            continue
+
+        jornal_candidates.append(
+            {
+                "card": card,
+                "pdf_icon": pdf_icon,
+                "edition_number": edition_number if edition_number is not None else -1,
+                "edition_date": edition_date,
+                "debug": card_text.replace("\n", " | ")[:260],
+            }
+        )
+        print(
+            f"[PDF] Candidato {idx}: edição={edition_number}, data={edition_date.strftime('%d/%m/%Y') if edition_date else 'N/A'}"
+        )
+
+    return jornal_candidates
+
+
 def access_and_download_pdf(driver):
     """Acessa a URL de download, aplica filtro e clica no ícone PDF da edição JORNAL mais recente"""
     print(f"[PDF] Navegando para {DIARIO_ACCESS_URL}...")
@@ -674,60 +780,26 @@ def access_and_download_pdf(driver):
         time.sleep(5)
         print("[PDF] Página de acesso carregada")
         
-        # Aplicar filtro "Public. Legal" = "Exceto"
-        set_publication_filter(driver)
-        
-        # Aguardar após aplicar filtro para lista atualizar
-        time.sleep(3)
-        
-        # Estratégia determinística: usar o card específico da grade de edições
+        if APPLY_PUBLIC_LEGAL_FILTER:
+            set_publication_filter(driver)
+            time.sleep(2)
+        else:
+            print("[FILTRO] Ignorado (APPLY_PUBLIC_LEGAL_FILTER=false)")
+
+        search_edition_by_name(driver, "JORNAL")
+        time.sleep(2)
+
         print("[PDF] Localizando cards de edição e selecionando JORNAL mais recente...")
-
-        candidate_cards = driver.find_elements(
-            By.XPATH,
-            "//div[contains(@class,'suita-block-home') and contains(@class,'v-card')]",
-        )
-        print(f"[PDF] Cards do grid encontrados: {len(candidate_cards)}")
-
-        jornal_candidates = []
-        for idx, card in enumerate(candidate_cards):
-            card_text = (card.text or "").strip()
-            card_text_lower = card_text.lower()
-
-            if not card_text:
-                continue
-
-            # Filtra somente JORNAL e exclui categorias indesejadas
-            if "jornal" not in card_text_lower:
-                continue
-            if any(tag in card_text_lower for tag in ["valvi", "folheto", "classificados", "classificado"]):
-                continue
-
-            edition_number = _parse_card_edition_number(card_text)
-            edition_date = _parse_card_date_ddmmyyyy(card_text)
-
-            try:
-                pdf_icon = card.find_element(
-                    By.XPATH,
-                    ".//i[contains(@class,'mdi-file-pdf-box') and contains(@class,'v-icon--clickable')]",
-                )
-            except Exception:
-                continue
-
-            jornal_candidates.append(
-                {
-                    "card": card,
-                    "pdf_icon": pdf_icon,
-                    "edition_number": edition_number if edition_number is not None else -1,
-                    "edition_date": edition_date,
-                    "debug": card_text.replace("\n", " | ")[:220],
-                }
-            )
-            print(
-                f"[PDF] Candidato {idx}: edição={edition_number}, data={edition_date.strftime('%d/%m/%Y') if edition_date else 'N/A'}"
-            )
+        jornal_candidates = get_jornal_candidates(driver)
 
         if not jornal_candidates:
+            try:
+                driver.save_screenshot("/tmp/jornal_not_found.png")
+                with open("/tmp/jornal_not_found.html", "w", encoding="utf-8") as handle:
+                    handle.write(driver.page_source)
+                print("[PDF] Debug salvo em /tmp/jornal_not_found.png e /tmp/jornal_not_found.html")
+            except Exception:
+                pass
             raise Exception("Nenhum card de JORNAL válido com ícone PDF foi encontrado")
 
         # Ordena por data e depois por número da edição (desc) para pegar o mais recente hoje/amanhã
