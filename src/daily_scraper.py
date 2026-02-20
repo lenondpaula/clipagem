@@ -8,6 +8,8 @@ import sys
 import time
 import glob
 import stat
+import re
+from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 from selenium import webdriver
@@ -640,6 +642,28 @@ def set_publication_filter(driver):
 
 
 # ==================== ACESSO E DOWNLOAD DO PDF ====================
+def _parse_card_date_ddmmyyyy(text):
+    """Extrai data no formato DD/MM/YYYY de um texto de card."""
+    match = re.search(r"Data\s*Edi[çc][ãa]o\s*:\s*(\d{2}/\d{2}/\d{4})", text, re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%d/%m/%Y")
+    except ValueError:
+        return None
+
+
+def _parse_card_edition_number(text):
+    """Extrai número da edição a partir de texto como 'Edição Nº 7342'."""
+    match = re.search(r"Edi[çc][ãa]o\s*N[ºo]?\s*(\d+)", text, re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
 def access_and_download_pdf(driver):
     """Acessa a URL de download, aplica filtro e clica no ícone PDF da edição JORNAL mais recente"""
     print(f"[PDF] Navegando para {DIARIO_ACCESS_URL}...")
@@ -656,109 +680,73 @@ def access_and_download_pdf(driver):
         # Aguardar após aplicar filtro para lista atualizar
         time.sleep(3)
         
-        # Estratégia aprimorada: Procurar especificamente por "JORNAL" (não VALVI, FOLHETO, etc.)
-        print("[PDF] Procurando primeira edição do tipo JORNAL (excluindo VALVI, FOLHETO, CLASSIFICADOS)...")
-        
-        jornal_card = None
-        pdf_icon = None
-        
-        # Primeiro, listar todos os cards/itens disponíveis para debug
-        try:
-            all_cards = driver.find_elements(By.XPATH, "//div[contains(@class, 'v-card') or contains(@class, 'card')]")
-            print(f"[PDF] Total de cards encontrados: {len(all_cards)}")
-            for idx, card in enumerate(all_cards[:10]):  # Mostrar os primeiros 10
-                card_text = card.text.replace('\n', ' | ')[:200]  # Limitar texto para log
-                print(f"[PDF]   Card {idx}: '{card_text}...'")
-        except Exception as e:
-            print(f"[PDF] Erro ao listar cards: {e}")
-        
-        # Buscar especificamente por elementos que contenham "JORNAL" (não VALVI)
-        jornal_selectors = [
-            # Card que contenha "JORNAL" mas não contenha "VALVI"
-            "//div[contains(., 'JORNAL') and not(contains(., 'VALVI')) and not(contains(., 'FOLHETO')) and not(contains(., 'CLASSIFICADOS'))][1]",
-            # Elemento com texto exato "JORNAL"
-            "(//*[text()='JORNAL']/ancestor::div[contains(@class, 'v-card') or contains(@class, 'card')])[1]",
-            # Qualquer container com "JORNAL" como primeira palavra
-            "(//div[contains(text(), 'JORNAL') and not(contains(text(), 'VALVI'))])[1]",
-            # Buscar por "DIÁRIO OFICIAL" ou variações
-            "//div[contains(., 'DIÁRIO') and not(contains(., 'VALVI'))][1]",
-            # Buscar por cards que não contenham VALVI
-            "(//div[contains(@class, 'v-card') and not(contains(., 'VALVI')) and not(contains(., 'FOLHETO'))])[1]",
-        ]
-        
-        for selector in jornal_selectors:
-            try:
-                jornal_card = driver.find_element(By.XPATH, selector)
-                card_text = jornal_card.text[:200]
-                print(f"[PDF] Card JORNAL encontrado: '{card_text}'")
-                
-                # Verificar se não é VALVI
-                if "valvi" in card_text.lower():
-                    print("[PDF] ⚠️ Card encontrado contém VALVI, ignorando...")
-                    continue
-                    
-                # Procurar ícone PDF dentro do card
-                try:
-                    pdf_icon = jornal_card.find_element(By.XPATH, 
-                        ".//*[contains(@class, 'mdi-file-pdf-box') or contains(@class, 'pdf')]")
-                    print("[PDF] ✓ Ícone PDF encontrado no card JORNAL")
-                    break
-                except:
-                    print("[PDF] PDF não encontrado neste card, tentando próximo...")
-                    continue
-                    
-            except Exception as e:
-                print(f"[PDF] Seletor falhou: {selector} - {e}")
+        # Estratégia determinística: usar o card específico da grade de edições
+        print("[PDF] Localizando cards de edição e selecionando JORNAL mais recente...")
+
+        candidate_cards = driver.find_elements(
+            By.XPATH,
+            "//div[contains(@class,'suita-block-home') and contains(@class,'v-card')]",
+        )
+        print(f"[PDF] Cards do grid encontrados: {len(candidate_cards)}")
+
+        jornal_candidates = []
+        for idx, card in enumerate(candidate_cards):
+            card_text = (card.text or "").strip()
+            card_text_lower = card_text.lower()
+
+            if not card_text:
                 continue
-        
-        # Se não encontrou card JORNAL específico, tentar abordagem mais ampla
-        if not pdf_icon:
-            print("[PDF] Buscando ícones PDF próximos a texto 'JORNAL'...")
+
+            # Filtra somente JORNAL e exclui categorias indesejadas
+            if "jornal" not in card_text_lower:
+                continue
+            if any(tag in card_text_lower for tag in ["valvi", "folheto", "classificados", "classificado"]):
+                continue
+
+            edition_number = _parse_card_edition_number(card_text)
+            edition_date = _parse_card_date_ddmmyyyy(card_text)
+
             try:
-                # Encontrar texto "JORNAL" e buscar PDF próximo
-                jornal_text = driver.find_element(By.XPATH, "//*[contains(text(), 'JORNAL') and not(contains(text(), 'VALVI'))]")
-                # Buscar PDF no mesmo container pai
-                parent = jornal_text.find_element(By.XPATH, "ancestor::div[1]")
-                pdf_icon = parent.find_element(By.XPATH, ".//*[contains(@class, 'mdi-file-pdf-box')]")
-                print("[PDF] ✓ PDF encontrado próximo a texto JORNAL")
-            except Exception as e:
-                print(f"[PDF] Busca por proximidade falhou: {e}")
-        
-        # Último fallback: primeiro PDF disponível (mas com aviso)
-        if not pdf_icon:
-            print("[PDF] ⚠️ FALLBACK: Usando primeiro ícone PDF disponível (risco de não ser JORNAL)")
-            try:
-                pdf_icon = driver.find_element(By.XPATH, "//*[contains(@class, 'mdi-file-pdf-box')][1]")
-                print("[PDF] Primeiro ícone PDF encontrado (fallback)")
-            except Exception as e:
-                print("[PDF] ERRO: Nenhum ícone PDF encontrado!")
-                raise Exception("Nenhum ícone PDF encontrado na página")
-        
-        # Estratégia alternativa: se o filtro falhou, tentar o segundo PDF (pode ser JORNAL)
-        if not jornal_card and pdf_icon:
-            try:
-                all_pdf_icons = driver.find_elements(By.XPATH, "//*[contains(@class, 'mdi-file-pdf-box')]")
-                if len(all_pdf_icons) > 1:
-                    print("[PDF] ⚠️ Filtro falhou, tentando segundo PDF (possivelmente JORNAL)...")
-                    pdf_icon = all_pdf_icons[1]  # Segundo PDF
-                    print("[PDF] Segundo ícone PDF selecionado")
-            except Exception as e:
-                print(f"[PDF] Erro ao tentar segundo PDF: {e}")
-        
-        # Validação final: verificar se estamos baixando algo que parece JORNAL
-        try:
-            # Tentar encontrar texto próximo ao ícone
-            parent_container = pdf_icon.find_element(By.XPATH, "ancestor::div[1]")
-            container_text = parent_container.text.lower()
-            
-            if "jornal" in container_text and "valvi" not in container_text:
-                print("[PDF] ✓ Validação: Parece ser um arquivo JORNAL válido")
-            elif "valvi" in container_text:
-                print("[PDF] ⚠️ AVISO: Possível arquivo VALVI detectado!")
-            else:
-                print("[PDF] ? Validação inconclusiva, prosseguindo...")
-        except:
-            print("[PDF] Não foi possível validar conteúdo do arquivo")
+                pdf_icon = card.find_element(
+                    By.XPATH,
+                    ".//i[contains(@class,'mdi-file-pdf-box') and contains(@class,'v-icon--clickable')]",
+                )
+            except Exception:
+                continue
+
+            jornal_candidates.append(
+                {
+                    "card": card,
+                    "pdf_icon": pdf_icon,
+                    "edition_number": edition_number if edition_number is not None else -1,
+                    "edition_date": edition_date,
+                    "debug": card_text.replace("\n", " | ")[:220],
+                }
+            )
+            print(
+                f"[PDF] Candidato {idx}: edição={edition_number}, data={edition_date.strftime('%d/%m/%Y') if edition_date else 'N/A'}"
+            )
+
+        if not jornal_candidates:
+            raise Exception("Nenhum card de JORNAL válido com ícone PDF foi encontrado")
+
+        # Ordena por data e depois por número da edição (desc) para pegar o mais recente hoje/amanhã
+        jornal_candidates.sort(
+            key=lambda item: (
+                item["edition_date"] if item["edition_date"] is not None else datetime.min,
+                item["edition_number"],
+            ),
+            reverse=True,
+        )
+
+        selected = jornal_candidates[0]
+        pdf_icon = selected["pdf_icon"]
+        print(
+            "[PDF] Selecionado card JORNAL mais recente: "
+            f"edição={selected['edition_number']}, "
+            f"data={selected['edition_date'].strftime('%d/%m/%Y') if selected['edition_date'] else 'N/A'}"
+        )
+        print(f"[PDF] Card selecionado (debug): {selected['debug']}")
         
         # Clicar no ícone para iniciar download
         driver.execute_script("arguments[0].click();", pdf_icon)
