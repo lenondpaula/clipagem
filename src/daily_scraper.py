@@ -409,7 +409,8 @@ def find_element_with_fallback_any_frame(driver, selectors, timeout=LOGIN_TIMEOU
     except Exception:
         pass
 
-    element = find_element_with_fallback(driver, selectors, min(2.5, max(0.5, deadline - time.monotonic())))
+    main_document_timeout = max(0.5, deadline - time.monotonic())
+    element = find_element_with_fallback(driver, selectors, main_document_timeout)
     if element:
         return element
 
@@ -425,7 +426,7 @@ def find_element_with_fallback_any_frame(driver, selectors, timeout=LOGIN_TIMEOU
         except Exception:
             continue
 
-        frame_timeout = min(1.5, remaining)
+        frame_timeout = min(2.0, remaining)
         element = find_element_with_fallback(driver, selectors, frame_timeout)
         if element:
             print(f"[LOGIN] Elemento encontrado dentro do iframe {idx}")
@@ -450,7 +451,8 @@ def find_clickable_element_with_fallback_any_frame(driver, selectors, timeout=LO
     except Exception:
         pass
 
-    element = find_clickable_element_with_fallback(driver, selectors, min(2.5, max(0.5, deadline - time.monotonic())))
+    main_document_timeout = max(0.5, deadline - time.monotonic())
+    element = find_clickable_element_with_fallback(driver, selectors, main_document_timeout)
     if element:
         return element
 
@@ -466,7 +468,7 @@ def find_clickable_element_with_fallback_any_frame(driver, selectors, timeout=LO
         except Exception:
             continue
 
-        frame_timeout = min(1.5, remaining)
+        frame_timeout = min(2.0, remaining)
         element = find_clickable_element_with_fallback(driver, selectors, frame_timeout)
         if element:
             print(f"[LOGIN] Elemento clicavel encontrado dentro do iframe {idx}")
@@ -513,6 +515,11 @@ def perform_login(driver):
         
         # Seletores para campo de usuário (em ordem de preferência)
         username_selectors = [
+            # Markup Vuetify atual do site
+            "//label[contains(., 'Entre com seu E-mail ou CPF/CNPJ')]/following::input[contains(@class, 'v-field__input')][1]",
+            "//input[contains(@class, 'v-field__input') and @type='text' and @maxlength='100']",
+            "//input[@type='text' and contains(@aria-labelledby, '-label') and @maxlength='100']",
+
             # Por placeholder
             "//input[@placeholder='E-mail']",
             "//input[@placeholder='Email']",
