@@ -39,7 +39,11 @@ else:
 DATA_FOLDER = os.path.join(os.path.dirname(__file__), "..", "data")
 DOWNLOAD_TIMEOUT = 30
 LOGIN_TIMEOUT = 15
+LOGIN_TOTAL_TIMEOUT = int(os.getenv("LOGIN_TOTAL_TIMEOUT", "24"))
+LOGIN_FIELD_TIMEOUT = int(os.getenv("LOGIN_FIELD_TIMEOUT", "8"))
+LOGIN_BUTTON_TIMEOUT = int(os.getenv("LOGIN_BUTTON_TIMEOUT", "6"))
 PDF_WAIT_TIMEOUT = 20
+LISTING_READY_TIMEOUT = int(os.getenv("LISTING_READY_TIMEOUT", str(PDF_WAIT_TIMEOUT)))
 CARD_DISCOVERY_TIMEOUT = int(os.getenv("CARD_DISCOVERY_TIMEOUT", "12"))
 FAST_PDF_CLICK_TIMEOUT = int(os.getenv("FAST_PDF_CLICK_TIMEOUT", "14"))
 PDF_FILENAME = "diario_sm_atual.pdf"
@@ -110,6 +114,38 @@ def _save_listing_page_debug(driver):
         _save_debug_html("listagem_logada.html", driver.page_source)
     except Exception as e:
         print(f"[DEBUG] Falha ao salvar HTML da listagem: {e}")
+
+
+def _save_page_debug(driver, file_prefix):
+    """Salva screenshot e HTML da página atual com um prefixo específico."""
+    try:
+        driver.save_screenshot(f"/tmp/{file_prefix}.png")
+        print(f"[DEBUG] Screenshot salvo: /tmp/{file_prefix}.png")
+    except Exception as e:
+        print(f"[DEBUG] Falha ao salvar screenshot {file_prefix}: {e}")
+
+    try:
+        _save_debug_html(f"{file_prefix}.html", driver.page_source)
+    except Exception as e:
+        print(f"[DEBUG] Falha ao salvar HTML {file_prefix}: {e}")
+
+
+def _write_stage_marker(stage, details=""):
+    """Registra a etapa atual do scraper em /tmp para diagnóstico em CI."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    message = f"{timestamp} | {stage}"
+    if details:
+        message = f"{message} | {details}"
+
+    try:
+        with open("/tmp/scraper_stage.txt", "w", encoding="utf-8") as handle:
+            handle.write(message + "\n")
+        with open("/tmp/scraper_stage_history.txt", "a", encoding="utf-8") as handle:
+            handle.write(message + "\n")
+    except Exception as e:
+        print(f"[STAGE] Falha ao registrar etapa '{stage}': {e}")
+
+    print(f"[STAGE] {message}")
 
 
 def _human_pause(min_seconds=0.25, max_seconds=0.9):
@@ -321,9 +357,16 @@ def find_element_with_fallback(driver, selectors, timeout=LOGIN_TIMEOUT):
     Returns:
         WebElement ou None
     """
+    deadline = time.monotonic() + timeout
+
     for selector in selectors:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+
+        wait_timeout = min(1.5, remaining)
         try:
-            element = WebDriverWait(driver, timeout).until(
+            element = WebDriverWait(driver, wait_timeout, poll_frequency=0.2).until(
                 EC.presence_of_element_located((By.XPATH, selector))
             )
             return element
@@ -336,9 +379,16 @@ def find_clickable_element_with_fallback(driver, selectors, timeout=LOGIN_TIMEOU
     """
     Tenta encontrar e clicar em um elemento usando múltiplos seletores XPATH.
     """
+    deadline = time.monotonic() + timeout
+
     for selector in selectors:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+
+        wait_timeout = min(1.5, remaining)
         try:
-            element = WebDriverWait(driver, timeout).until(
+            element = WebDriverWait(driver, wait_timeout, poll_frequency=0.2).until(
                 EC.element_to_be_clickable((By.XPATH, selector))
             )
             return element
@@ -352,24 +402,31 @@ def find_element_with_fallback_any_frame(driver, selectors, timeout=LOGIN_TIMEOU
     Procura elemento no documento principal e em iframes.
     Mantem o contexto no frame onde o elemento for encontrado.
     """
+    deadline = time.monotonic() + timeout
+
     try:
         driver.switch_to.default_content()
     except Exception:
         pass
 
-    element = find_element_with_fallback(driver, selectors, timeout)
+    element = find_element_with_fallback(driver, selectors, min(2.5, max(0.5, deadline - time.monotonic())))
     if element:
         return element
 
     frames = driver.find_elements(By.TAG_NAME, "iframe")
     for idx, frame in enumerate(frames):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+
         try:
             driver.switch_to.default_content()
             driver.switch_to.frame(frame)
         except Exception:
             continue
 
-        element = find_element_with_fallback(driver, selectors, max(5, timeout // 2))
+        frame_timeout = min(1.5, remaining)
+        element = find_element_with_fallback(driver, selectors, frame_timeout)
         if element:
             print(f"[LOGIN] Elemento encontrado dentro do iframe {idx}")
             return element
@@ -386,24 +443,31 @@ def find_clickable_element_with_fallback_any_frame(driver, selectors, timeout=LO
     Procura elemento clicavel no documento principal e em iframes.
     Mantem o contexto no frame onde o elemento for encontrado.
     """
+    deadline = time.monotonic() + timeout
+
     try:
         driver.switch_to.default_content()
     except Exception:
         pass
 
-    element = find_clickable_element_with_fallback(driver, selectors, timeout)
+    element = find_clickable_element_with_fallback(driver, selectors, min(2.5, max(0.5, deadline - time.monotonic())))
     if element:
         return element
 
     frames = driver.find_elements(By.TAG_NAME, "iframe")
     for idx, frame in enumerate(frames):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+
         try:
             driver.switch_to.default_content()
             driver.switch_to.frame(frame)
         except Exception:
             continue
 
-        element = find_clickable_element_with_fallback(driver, selectors, max(5, timeout // 2))
+        frame_timeout = min(1.5, remaining)
+        element = find_clickable_element_with_fallback(driver, selectors, frame_timeout)
         if element:
             print(f"[LOGIN] Elemento clicavel encontrado dentro do iframe {idx}")
             return element
@@ -421,12 +485,28 @@ def perform_login(driver):
     Usa múltiplas estratégias para encontrar campos mesmo com IDs dinâmicos.
     """
     print(f"[LOGIN] Navegando para {DIARIO_LOGIN_URL}...")
+    _write_stage_marker("login:start", DIARIO_LOGIN_URL)
     driver.get(DIARIO_LOGIN_URL)
     
     try:
         # Aguardar página carregar
         time.sleep(3)
         print("[LOGIN] Página de login carregada")
+        _save_page_debug(driver, "login_page_loaded")
+
+        login_deadline = time.monotonic() + LOGIN_TOTAL_TIMEOUT
+
+        def reserve_login_budget(step_name, preferred_timeout):
+            remaining_total = login_deadline - time.monotonic()
+            if remaining_total <= 0:
+                raise TimeoutError(f"Tempo total do login esgotado antes de localizar {step_name}")
+
+            wait_timeout = min(preferred_timeout, remaining_total)
+            print(
+                f"[LOGIN] Orçamento para {step_name}: {wait_timeout:.1f}s "
+                f"(restante total {remaining_total:.1f}s)"
+            )
+            return wait_timeout
         
         # ==================== CAMPO DE USUÁRIO ====================
         print("[LOGIN] Procurando campo de E-mail/Usuário...")
@@ -476,21 +556,22 @@ def perform_login(driver):
             "//input[1]",
         ]
         
-        username_field = find_element_with_fallback_any_frame(driver, username_selectors, LOGIN_TIMEOUT)
+        username_field = find_element_with_fallback_any_frame(
+            driver,
+            username_selectors,
+            reserve_login_budget("campo de usuário", LOGIN_FIELD_TIMEOUT),
+        )
         
         if not username_field:
             print("[LOGIN] Nenhum campo de usuário encontrado!")
             print("[LOGIN] Tentando screenshot para debug...")
             print(f"[LOGIN] URL atual: {driver.current_url}")
-            try:
-                driver.save_screenshot("/tmp/login_error.png")
-                with open("/tmp/login_error.html", "w", encoding="utf-8") as handle:
-                    handle.write(driver.page_source)
-            except Exception:
-                pass
+            _save_page_debug(driver, "login_username_not_found")
+            _save_page_debug(driver, "login_error")
             raise Exception("Campo de usuário não encontrado com nenhum seletor")
         
         print(f"[LOGIN] Campo de Usuário encontrado")
+        _write_stage_marker("login:username_found")
         _human_scroll_into_view(driver, username_field)
         username_field.clear()
         _human_pause(0.15, 0.4)
@@ -537,13 +618,20 @@ def perform_login(driver):
             "//input[2]",
         ]
         
-        password_field = find_element_with_fallback_any_frame(driver, password_selectors, LOGIN_TIMEOUT)
+        password_field = find_element_with_fallback_any_frame(
+            driver,
+            password_selectors,
+            reserve_login_budget("campo de senha", LOGIN_FIELD_TIMEOUT),
+        )
         
         if not password_field:
             print("[LOGIN] Nenhum campo de senha encontrado!")
+            _save_page_debug(driver, "login_password_not_found")
+            _save_page_debug(driver, "login_error")
             raise Exception("Campo de senha não encontrado com nenhum seletor")
         
         print(f"[LOGIN] Campo de Senha encontrado")
+        _write_stage_marker("login:password_found")
         _human_scroll_into_view(driver, password_field)
         password_field.clear()
         _human_pause(0.15, 0.4)
@@ -578,15 +666,23 @@ def perform_login(driver):
             "//button[1]",
         ]
         
-        login_button = find_clickable_element_with_fallback_any_frame(driver, button_selectors, LOGIN_TIMEOUT)
+        login_button = find_clickable_element_with_fallback_any_frame(
+            driver,
+            button_selectors,
+            reserve_login_budget("botão Entrar", LOGIN_BUTTON_TIMEOUT),
+        )
         
         if not login_button:
             print("[LOGIN] Nenhum botão de entrar encontrado!")
+            _save_page_debug(driver, "login_button_not_found")
+            _save_page_debug(driver, "login_error")
             raise Exception("Botão 'Entrar' não encontrado com nenhum seletor")
         
         print(f"[LOGIN] Botão 'Entrar' encontrado")
+        _write_stage_marker("login:button_found")
         _human_click(driver, login_button, label="botão Entrar")
         print(f"[LOGIN] Botão clicado. Aguardando redirecionamento...")
+        _write_stage_marker("login:submitted", driver.current_url)
         
         # Aguardar login ser completado
         time.sleep(5)
@@ -594,11 +690,14 @@ def perform_login(driver):
             driver.switch_to.default_content()
         except Exception:
             pass
-        print("[LOGIN] Login realizado com sucesso")
+        print(f"[LOGIN] Login realizado com sucesso. URL atual: {driver.current_url}")
+        _write_stage_marker("login:completed", driver.current_url)
         
     except Exception as e:
         print(f"[LOGIN] ERRO durante login: {e}")
         print(f"[LOGIN] Tipo de erro: {type(e).__name__}")
+        _save_page_debug(driver, "login_error")
+        _write_stage_marker("login:error", str(e))
         raise
 
 
@@ -946,6 +1045,37 @@ def search_edition_by_name(driver, edition_name="JORNAL"):
     return True
 
 
+def wait_for_listing_ready(driver, timeout=LISTING_READY_TIMEOUT):
+    """Confirma que a listagem carregou antes de iniciar a busca do PDF."""
+    print(f"[LISTAGEM] Aguardando listagem ficar pronta (timeout={timeout}s)...")
+    _write_stage_marker("listing:waiting")
+
+    readiness_checks = [
+        ("campo_busca_edicao", "//input[contains(@placeholder, 'Pesquisar nome edição')]"),
+        ("card_edicao", "//div[contains(@class,'suita-block-home') or contains(@class,'v-card') or contains(@class,'edition')]"),
+        ("icone_pdf", "//i[contains(@class,'mdi-file-pdf') or contains(@title,'PDF') or contains(@aria-label,'PDF')]"),
+    ]
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for label, xpath in readiness_checks:
+            try:
+                elements = driver.find_elements(By.XPATH, xpath)
+            except Exception:
+                elements = []
+
+            visible_elements = [element for element in elements if element.is_displayed()]
+            if visible_elements:
+                print(f"[LISTAGEM] Sinal de prontidão detectado: {label} ({len(visible_elements)} visíveis)")
+                _write_stage_marker("listing:ready", label)
+                return label
+        time.sleep(0.5)
+
+    _save_page_debug(driver, "listagem_not_ready")
+    _write_stage_marker("listing:timeout")
+    raise TimeoutError("Listagem não ficou pronta após o login")
+
+
 def get_jornal_candidates(driver):
     """Coleta cards válidos de JORNAL com ícone PDF clicável."""
     card_xpaths = [
@@ -1028,6 +1158,7 @@ def get_jornal_candidates(driver):
 def click_latest_jornal_pdf_fast(driver):
     """Tenta caminho rápido: clicar direto no ícone PDF do JORNAL mais recente."""
     print("[PDF][FAST] Tentando clique imediato no PDF do JORNAL mais recente...")
+    _write_stage_marker("pdf_fast:start")
 
     # Janela curta para a SPA renderizar os cards principais.
     deadline = time.time() + FAST_PDF_CLICK_TIMEOUT
@@ -1059,17 +1190,20 @@ def click_latest_jornal_pdf_fast(driver):
             )
             _human_click(driver, pdf_icon, label="icone PDF (fast-path)")
             print("[PDF][FAST] Clique no ícone PDF executado")
+            _write_stage_marker("pdf_fast:clicked", selected["debug"])
             return True
 
         _human_pause(0.45, 0.85)
 
     print(f"[PDF][FAST] Nenhum candidato JORNAL+PDF após {attempts} tentativas")
+    _write_stage_marker("pdf_fast:not_found", f"tentativas={attempts}")
     return False
 
 
 def access_and_download_pdf(driver):
     """Acessa a URL de download, aplica filtro e clica no ícone PDF da edição JORNAL mais recente"""
     print(f"[PDF] Navegando para {DIARIO_ACCESS_URL}...")
+    _write_stage_marker("listing:open", DIARIO_ACCESS_URL)
     driver.get(DIARIO_ACCESS_URL)
     
     try:
@@ -1084,12 +1218,14 @@ def access_and_download_pdf(driver):
         _human_pause(0.35, 0.7)
         print("[PDF] Página de acesso carregada")
         _save_listing_page_debug(driver)
+        wait_for_listing_ready(driver)
 
         # Regra principal: após login, a primeira tentativa é clicar direto no PDF do JORNAL mais recente.
         if click_latest_jornal_pdf_fast(driver):
             print("[PDF] Fast-path concluído com sucesso")
             return
         print("[PDF] Fast-path sem sucesso; aplicando fallback estruturado")
+        _write_stage_marker("pdf:fallback_start")
         
         if APPLY_PUBLIC_LEGAL_FILTER:
             set_publication_filter(driver)
@@ -1166,9 +1302,11 @@ def access_and_download_pdf(driver):
         # Clicar no ícone para iniciar download
         _human_click(driver, pdf_icon, label="ícone PDF")
         print("[PDF] Clique no ícone realizado. Aguardando download...")
+        _write_stage_marker("pdf:clicked", selected["debug"])
         
     except Exception as e:
         print(f"[PDF] ERRO ao acessar PDF: {e}")
+        _write_stage_marker("pdf:error", str(e))
         raise
 
 
@@ -1176,6 +1314,7 @@ def access_and_download_pdf(driver):
 def wait_for_download_completion():
     """Aguarda o download ser completado monitorando a pasta data/"""
     print("[DOWNLOAD] Aguardando conclusão do download...")
+    _write_stage_marker("download:waiting")
     
     start_time = time.time()
     while time.time() - start_time < DOWNLOAD_TIMEOUT:
@@ -1196,6 +1335,7 @@ def wait_for_download_completion():
             # Validação do arquivo baixado
             if validate_downloaded_file(downloaded_file):
                 print(f"[DOWNLOAD] ✓ Arquivo validado com sucesso!")
+                _write_stage_marker("download:completed", downloaded_file)
                 return downloaded_file
             else:
                 print(f"[DOWNLOAD] ✗ Arquivo inválido detectado, removendo...")
@@ -1208,6 +1348,7 @@ def wait_for_download_completion():
         
         time.sleep(1)
     
+    _write_stage_marker("download:timeout")
     raise Exception(f"Timeout: Download não concluído em {DOWNLOAD_TIMEOUT} segundos")
 
 
@@ -1324,6 +1465,7 @@ def main():
     print("INICIANDO SCRAPER DE DIÁRIO OFICIAL")
     print("=" * 60)
     print()
+    _write_stage_marker("main:start")
     
     # Diagnóstico do sistema
     diagnose_system()
@@ -1339,11 +1481,13 @@ def main():
     
     # Etapa 1: Limpeza
     cleanup_old_pdfs()
+    _write_stage_marker("main:cleanup_done")
     
     driver = None
     try:
         # Etapa 2: Setup Chrome
         driver = setup_chrome_driver()
+        _write_stage_marker("main:chrome_ready")
         
         # Etapa 3: Login
         perform_login(driver)
@@ -1356,12 +1500,14 @@ def main():
         
         # Etapa 6: Renomear
         final_path = rename_pdf_file(pdf_path)
+        _write_stage_marker("main:success", final_path)
         
         print("=" * 60)
         print(f"✓ SUCESSO! PDF salvo em: {final_path}")
         print("=" * 60)
         
     except Exception as e:
+        _write_stage_marker("main:error", str(e))
         print("=" * 60)
         print(f"✗ ERRO DURANTE EXECUÇÃO: {e}")
         print("=" * 60)

@@ -11,6 +11,8 @@ permissions:
 jobs:
   clipagem-automation:
     runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
     
     steps:
       # ==================== CHECKOUT ====================
@@ -88,9 +90,15 @@ jobs:
           SCRAPER_TIMEOUT_SECONDS="${SCRAPER_TIMEOUT_SECONDS:-90}"
           echo "[RUN] Timeout objetivo do scraper: ${SCRAPER_TIMEOUT_SECONDS}s"
           set +e
-          timeout "${SCRAPER_TIMEOUT_SECONDS}" python src/daily_scraper.py
+          timeout --signal=TERM --kill-after=10s "${SCRAPER_TIMEOUT_SECONDS}" python -u src/daily_scraper.py
           exit_code=$?
           set -e
+
+          if [ -f /tmp/scraper_stage.txt ]; then
+            echo "[RUN] Última etapa registrada pelo scraper:"
+            cat /tmp/scraper_stage.txt
+          fi
+
           if [ "$exit_code" -ne 0 ]; then
             if [ "$exit_code" -eq 124 ]; then
               echo "✗ ERRO: daily_scraper.py excedeu o tempo limite de ${SCRAPER_TIMEOUT_SECONDS}s"
@@ -112,10 +120,10 @@ jobs:
           fi
 
       # ==================== EXECUTAR ANALYZER ====================
-      - name: 🧠 Executar Groq Analyzer
+      - name: 🧠 Executar Analyzer
         run: |
           echo "[RUN] Iniciando analyzer.py..."
-          python src/analyzer.py
+          python -u src/analyzer.py
           
           echo "[RUN] Verificando saída..."
           ls -lh data/
@@ -183,8 +191,15 @@ jobs:
         with:
           name: login-debug-${{ github.run_id }}
           path: |
+            /tmp/scraper_stage.txt
+            /tmp/scraper_stage_history.txt
+            /tmp/login_page_loaded.*
+            /tmp/login_username_not_found.*
+            /tmp/login_password_not_found.*
+            /tmp/login_button_not_found.*
             /tmp/login_error.*
             /tmp/listagem_logada.*
+            /tmp/listagem_not_ready.*
             /tmp/listagem_cards_summary.txt
             /tmp/jornal_not_found.*
             /tmp/public_legal_filter_*.html
@@ -206,9 +221,12 @@ jobs:
           echo "Verifique os logs acima para mais detalhes."
           echo "GitHub Actions URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo ""
-          echo "Arquivos de debug disponíveis:"
-          echo "- /tmp/login_error.png (screenshot da página)"
-          echo "- /tmp/login_error.html (HTML da página)"
+          if [ -f /tmp/scraper_stage.txt ]; then
+            echo "Última etapa registrada:"
+            cat /tmp/scraper_stage.txt
+            echo ""
+          fi
+          echo "Arquivos de debug disponíveis no artifact login-debug-${{ github.run_id }}"
           echo ""
           echo "Acesse: Actions > [Daily Clipagem Run] > Artifacts > login-debug-${{ github.run_id }}"
           exit 1
