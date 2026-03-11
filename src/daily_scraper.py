@@ -41,6 +41,7 @@ DOWNLOAD_TIMEOUT = 30
 LOGIN_TIMEOUT = 15
 PDF_WAIT_TIMEOUT = 20
 CARD_DISCOVERY_TIMEOUT = int(os.getenv("CARD_DISCOVERY_TIMEOUT", "12"))
+FAST_PDF_CLICK_TIMEOUT = int(os.getenv("FAST_PDF_CLICK_TIMEOUT", "14"))
 PDF_FILENAME = "diario_sm_atual.pdf"
 APPLY_PUBLIC_LEGAL_FILTER = os.getenv("APPLY_PUBLIC_LEGAL_FILTER", "false").strip().lower() in ("1", "true", "yes", "on")
 
@@ -1024,6 +1025,48 @@ def get_jornal_candidates(driver):
     return jornal_candidates
 
 
+def click_latest_jornal_pdf_fast(driver):
+    """Tenta caminho rápido: clicar direto no ícone PDF do JORNAL mais recente."""
+    print("[PDF][FAST] Tentando clique imediato no PDF do JORNAL mais recente...")
+
+    # Janela curta para a SPA renderizar os cards principais.
+    deadline = time.time() + FAST_PDF_CLICK_TIMEOUT
+    attempts = 0
+
+    while time.time() < deadline:
+        attempts += 1
+        jornal_candidates = get_jornal_candidates(driver)
+        if jornal_candidates:
+            jornal_candidates.sort(
+                key=lambda item: (
+                    item["edition_date"] if item["edition_date"] is not None else datetime.min,
+                    item["edition_number"],
+                ),
+                reverse=True,
+            )
+            selected = jornal_candidates[0]
+            pdf_icon = selected["pdf_icon"]
+
+            if not _is_valid_pdf_trigger_element(pdf_icon):
+                raise Exception("Elemento encontrado não é gatilho PDF válido no fast-path")
+
+            _save_element_html(driver, selected["card"], "card_jornal.html")
+            _save_icon_context_html(driver, pdf_icon, "pdf_icon_context.html", levels=3)
+            print(
+                "[PDF][FAST] Selecionado JORNAL mais recente: "
+                f"edicao={selected['edition_number']}, "
+                f"data={selected['edition_date'].strftime('%d/%m/%Y') if selected['edition_date'] else 'N/A'}"
+            )
+            _human_click(driver, pdf_icon, label="icone PDF (fast-path)")
+            print("[PDF][FAST] Clique no ícone PDF executado")
+            return True
+
+        _human_pause(0.45, 0.85)
+
+    print(f"[PDF][FAST] Nenhum candidato JORNAL+PDF após {attempts} tentativas")
+    return False
+
+
 def access_and_download_pdf(driver):
     """Acessa a URL de download, aplica filtro e clica no ícone PDF da edição JORNAL mais recente"""
     print(f"[PDF] Navegando para {DIARIO_ACCESS_URL}...")
@@ -1038,18 +1081,24 @@ def access_and_download_pdf(driver):
         except Exception:
             print("[PDF] AVISO: document.readyState não confirmou 'complete' dentro do tempo limite")
 
-        _human_pause(0.8, 1.6)
+        _human_pause(0.35, 0.7)
         print("[PDF] Página de acesso carregada")
         _save_listing_page_debug(driver)
+
+        # Regra principal: após login, a primeira tentativa é clicar direto no PDF do JORNAL mais recente.
+        if click_latest_jornal_pdf_fast(driver):
+            print("[PDF] Fast-path concluído com sucesso")
+            return
+        print("[PDF] Fast-path sem sucesso; aplicando fallback estruturado")
         
         if APPLY_PUBLIC_LEGAL_FILTER:
             set_publication_filter(driver)
-            _human_pause(1.0, 2.2)
+            _human_pause(0.5, 1.0)
         else:
             print("[FILTRO] Ignorado (APPLY_PUBLIC_LEGAL_FILTER=false)")
 
         search_edition_by_name(driver, "JORNAL")
-        _human_pause(1.0, 2.0)
+        _human_pause(0.5, 1.0)
 
         try:
             WebDriverWait(driver, 8).until(

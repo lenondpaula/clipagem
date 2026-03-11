@@ -74,18 +74,28 @@ jobs:
             case "$line" in
               \#*) continue ;;
             esac
+            key="${line%%=*}"
+            value="${line#*=}"
+            if [ -n "$value" ] && [ "$key" != "$value" ]; then
+              echo "::add-mask::$value"
+            fi
             echo "$line" >> "$GITHUB_ENV"
           done < /tmp/secrets.env
 
       - name: 🤖 Executar Daily Scraper
         run: |
           echo "[RUN] Iniciando daily_scraper.py..."
-          SCRAPER_TIMEOUT_SECONDS="${SCRAPER_TIMEOUT_SECONDS:-150}"
+          SCRAPER_TIMEOUT_SECONDS="${SCRAPER_TIMEOUT_SECONDS:-90}"
           echo "[RUN] Timeout objetivo do scraper: ${SCRAPER_TIMEOUT_SECONDS}s"
-          if ! timeout "${SCRAPER_TIMEOUT_SECONDS}" python src/daily_scraper.py; then
-            exit_code=$?
+          set +e
+          timeout "${SCRAPER_TIMEOUT_SECONDS}" python src/daily_scraper.py
+          exit_code=$?
+          set -e
+          if [ "$exit_code" -ne 0 ]; then
             if [ "$exit_code" -eq 124 ]; then
               echo "✗ ERRO: daily_scraper.py excedeu o tempo limite de ${SCRAPER_TIMEOUT_SECONDS}s"
+            else
+              echo "✗ ERRO: daily_scraper.py falhou com exit code ${exit_code}"
             fi
             exit "$exit_code"
           fi
