@@ -7,6 +7,7 @@ on:
 
 jobs:
   keep-alive:
+    if: ${{ false }} # Pausado provisoriamente
     runs-on: ubuntu-latest
 
     steps:

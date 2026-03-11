@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   clipagem-automation:
-    if: ${{ false }} # Pausado provisoriamente
     runs-on: ubuntu-latest
     
     steps:

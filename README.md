@@ -162,6 +162,13 @@ GH_TOKEN = "seu_github_personal_access_token"
 - **Workflow**: `.github/workflows/daily_run.yml`
 - **Trigger Manual**: Via Streamlit ou GitHub Actions
 
+### Trigger Manual via Streamlit (Teste Rápido)
+1. Clique em **"Verificar Edição Agora"** na app.
+2. Confirme no GitHub Actions se o run entrou em **queued/running**.
+3. Ao finalizar, valide a geração de `data/diario_sm_atual.pdf` e `data/clipagem_hoje.json`.
+
+Se o run aparecer como **Skipped**, revise se o job do workflow não está pausado por condição fixa no YAML.
+
 ### Keep Alive
 - **Horário**: A cada 6 horas (00:00, 06:00, 12:00, 18:00 UTC)
 - **Método**: Selenium Chrome headless
@@ -253,6 +260,14 @@ Em caso de erro, o workflow salva:
 - `/tmp/login_error.html` - HTML source da página
 - `/tmp/filtro_debug.png` - Screenshot do filtro
 
+### Checklist Pós-Teste do Scraper
+- Login executado sem erro.
+- Filtro de publicação aplicado corretamente.
+- Card JORNAL identificado (não VALVI).
+- PDF atualizado em `data/diario_sm_atual.pdf`.
+- Analyzer concluiu e gerou `data/clipagem_hoje.json`.
+- Em caso de falha, artifacts de debug disponíveis no run.
+
 Acesse em: **GitHub Actions > Run > Artifacts**
 
 ---
@@ -294,3 +309,7 @@ Este projeto é de uso interno da **Prefeitura Municipal de Santa Maria**.
 - ✅ **Workflows otimizados** - Timeouts e verificações adicionais
 - ✅ **Validação pós-download** - Remove automaticamente arquivos inválidos
 - ✅ **User-agent real** - Simulação de navegador legítimo no keep-alive
+
+### Atualização Recente (11/03/2026)
+- ✅ **Trigger manual destravado** - Job do workflow diário reativado para testes via app.
+- ✅ **Prompt de retomada adicionado** - Documento pronto para continuidade em novo terminal.

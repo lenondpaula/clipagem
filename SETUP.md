@@ -34,7 +34,7 @@ DIARIO_LOGIN_URL=https://seu_url_de_login
 DIARIO_ACCESS_URL=https://seu_url_de_acesso
 DIARIO_USER=seu_usuario
 DIARIO_PASS=sua_senha
-GEMINI_API_KEY=sua_chave_api_google
+GROQ_API_KEY=sua_chave_api_groq
 ```
 
 ### 5. Testar Scraper
@@ -90,10 +90,10 @@ clipagem/
 | `DIARIO_USER` | Usuário/Email de login |
 | `DIARIO_PASS` | Senha de login |
 
-### Google Gemini
+### Groq API
 | Variável | Descrição |
 |----------|-----------|
-| `GEMINI_API_KEY` | Chave API do Google Gemini |
+| `GROQ_API_KEY` | Chave API do Groq |
 
 ### Obtendo as Credenciais
 
@@ -105,8 +105,8 @@ clipagem/
 #### 2. **DIARIO_USER** e **DIARIO_PASS**
 - Use suas credenciais de acesso ao sistema
 
-#### 3. **GEMINI_API_KEY**
-- Visite: https://aistudio.google.com/app/apikey
+#### 3. **GROQ_API_KEY**
+- Visite: https://console.groq.com/keys
 - Crie uma nova chave de API
 - Copie e guarde em local seguro
 
@@ -122,7 +122,7 @@ Se quiser usar o workflow automático no GitHub Actions, configure os secrets:
    - `DIARIO_ACCESS_URL`
    - `DIARIO_USER`
    - `DIARIO_PASS`
-   - `GEMINI_API_KEY`
+   - `GROQ_API_KEY`
 
 O workflow executará automaticamente todos os dias às 06:15 (Brasília).
 
@@ -142,7 +142,7 @@ python src/daily_scraper.py
 
 ### Testar análise (analyzer.py)
 ```bash
-export GEMINI_API_KEY="sua_chave"
+export GROQ_API_KEY="sua_chave"
 
 python src/analyzer.py
 ```
@@ -187,6 +187,17 @@ pip install -r requirements.txt
 2. Variáveis estão preenchidas corretamente?
 3. Senha não contém caracteres especiais que precisam escape?
 
+### Workflow fica como "Skipped"
+**Sintoma**:
+- O run é criado via workflow_dispatch, mas encerra em segundos com status Skipped.
+
+**Causa comum**:
+- Job com condição fixa de pausa no YAML (ex.: if: ${{ false }}).
+
+**Solução**:
+- Revisar o job no arquivo `.github/workflows/daily_run.yml` e remover a condição fixa.
+- Garantir que o workflow atualizado está em `main` antes de testar pelo botão da app.
+
 ### Login falha
 O script tira screenshot automático em `/tmp/login_error.png`
 - Verifique se o seletor de placeholder mudou
@@ -204,7 +215,7 @@ O script tira screenshot automático em `/tmp/login_error.png`
 
 2. analyzer.py
    ├── Extrai texto do PDF
-   ├── Envia para Google Gemini
+   ├── Envia para Groq
    └── Salva em data/clipagem_hoje.json
 
 3. app.py
@@ -223,4 +234,4 @@ O script tira screenshot automático em `/tmp/login_error.png`
 
 ---
 
-**Última atualização**: Fevereiro 2026
+**Última atualização**: Março 2026
