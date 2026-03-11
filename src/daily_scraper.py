@@ -47,7 +47,7 @@ LISTING_READY_TIMEOUT = int(os.getenv("LISTING_READY_TIMEOUT", str(PDF_WAIT_TIME
 CARD_DISCOVERY_TIMEOUT = int(os.getenv("CARD_DISCOVERY_TIMEOUT", "12"))
 FAST_PDF_CLICK_TIMEOUT = int(os.getenv("FAST_PDF_CLICK_TIMEOUT", "14"))
 PDF_FILENAME = "diario_sm_atual.pdf"
-APPLY_PUBLIC_LEGAL_FILTER = os.getenv("APPLY_PUBLIC_LEGAL_FILTER", "false").strip().lower() in ("1", "true", "yes", "on")
+APPLY_PUBLIC_LEGAL_FILTER = os.getenv("APPLY_PUBLIC_LEGAL_FILTER", "true").strip().lower() in ("1", "true", "yes", "on")
 
 DIARIO_LOGIN_URL = os.getenv("DIARIO_LOGIN_URL", "")
 DIARIO_ACCESS_URL = os.getenv("DIARIO_ACCESS_URL", "")
@@ -1168,8 +1168,8 @@ def get_jornal_candidates(driver):
 
 
 def click_latest_jornal_pdf_fast(driver):
-    """Tenta caminho rápido: clicar direto no ícone PDF do JORNAL mais recente."""
-    print("[PDF][FAST] Tentando clique imediato no PDF do JORNAL mais recente...")
+    """Tenta caminho rápido: clicar direto no ícone PDF do primeiro JORNAL disponível."""
+    print("[PDF][FAST] Tentando clique imediato no PDF do primeiro JORNAL disponível...")
     _write_stage_marker("pdf_fast:start")
 
     # Janela curta para a SPA renderizar os cards principais.
@@ -1180,13 +1180,6 @@ def click_latest_jornal_pdf_fast(driver):
         attempts += 1
         jornal_candidates = get_jornal_candidates(driver)
         if jornal_candidates:
-            jornal_candidates.sort(
-                key=lambda item: (
-                    item["edition_date"] if item["edition_date"] is not None else datetime.min,
-                    item["edition_number"],
-                ),
-                reverse=True,
-            )
             selected = jornal_candidates[0]
             pdf_icon = selected["pdf_icon"]
 
@@ -1196,7 +1189,7 @@ def click_latest_jornal_pdf_fast(driver):
             _save_element_html(driver, selected["card"], "card_jornal.html")
             _save_icon_context_html(driver, pdf_icon, "pdf_icon_context.html", levels=3)
             print(
-                "[PDF][FAST] Selecionado JORNAL mais recente: "
+                "[PDF][FAST] Selecionado primeiro JORNAL disponível: "
                 f"edicao={selected['edition_number']}, "
                 f"data={selected['edition_date'].strftime('%d/%m/%Y') if selected['edition_date'] else 'N/A'}"
             )
@@ -1213,7 +1206,7 @@ def click_latest_jornal_pdf_fast(driver):
 
 
 def access_and_download_pdf(driver):
-    """Acessa a URL de download, aplica filtro e clica no ícone PDF da edição JORNAL mais recente"""
+    """Acessa a URL de download, aplica filtro e clica no ícone PDF do primeiro JORNAL disponível."""
     print(f"[PDF] Navegando para {DIARIO_ACCESS_URL}...")
     _write_stage_marker("listing:open", DIARIO_ACCESS_URL)
     driver.get(DIARIO_ACCESS_URL)
@@ -1232,18 +1225,19 @@ def access_and_download_pdf(driver):
         _save_listing_page_debug(driver)
         wait_for_listing_ready(driver)
 
-        # Regra principal: após login, a primeira tentativa é clicar direto no PDF do JORNAL mais recente.
-        if click_latest_jornal_pdf_fast(driver):
-            print("[PDF] Fast-path concluído com sucesso")
-            return
-        print("[PDF] Fast-path sem sucesso; aplicando fallback estruturado")
-        _write_stage_marker("pdf:fallback_start")
-        
+        # Garante que o grid não esteja em Public. Legal = Somente.
         if APPLY_PUBLIC_LEGAL_FILTER:
             set_publication_filter(driver)
             _human_pause(0.5, 1.0)
         else:
             print("[FILTRO] Ignorado (APPLY_PUBLIC_LEGAL_FILTER=false)")
+
+        # Regra principal: após login, a primeira tentativa é clicar direto no PDF do primeiro JORNAL disponível.
+        if click_latest_jornal_pdf_fast(driver):
+            print("[PDF] Fast-path concluído com sucesso")
+            return
+        print("[PDF] Fast-path sem sucesso; aplicando fallback estruturado")
+        _write_stage_marker("pdf:fallback_start")
 
         search_edition_by_name(driver, "JORNAL")
         _human_pause(0.5, 1.0)
@@ -1273,15 +1267,6 @@ def access_and_download_pdf(driver):
                 pass
             raise Exception("Nenhum card de JORNAL válido com ícone PDF foi encontrado")
 
-        # Ordena por data e depois por número da edição (desc) para pegar o mais recente hoje/amanhã
-        jornal_candidates.sort(
-            key=lambda item: (
-                item["edition_date"] if item["edition_date"] is not None else datetime.min,
-                item["edition_number"],
-            ),
-            reverse=True,
-        )
-
         selected = jornal_candidates[0]
         _save_element_html(driver, selected["card"], "card_jornal.html")
 
@@ -1301,7 +1286,7 @@ def access_and_download_pdf(driver):
 
         _save_icon_context_html(driver, pdf_icon, "pdf_icon_context.html", levels=3)
         print(
-            "[PDF] Selecionado card JORNAL mais recente: "
+            "[PDF] Selecionado primeiro card JORNAL disponível: "
             f"edição={selected['edition_number']}, "
             f"data={selected['edition_date'].strftime('%d/%m/%Y') if selected['edition_date'] else 'N/A'}"
         )
