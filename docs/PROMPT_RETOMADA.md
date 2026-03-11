@@ -80,3 +80,49 @@ Formato de entrega esperado:
 - Arquivos alterados (se houver).
 - Proximo passo objetivo para novo teste.
 ```
+
+## Prompt de Retomada (Amanha - Estado Atual Consolidado)
+
+```text
+Continuar exatamente do ponto onde paramos no projeto Clipagem Digital e focar no reteste do scraper no GitHub Actions.
+
+Estado atual do codigo (ja aplicado em main):
+- Commit 9558fa8:
+	- Fast-path no scraper para tentar clicar imediatamente no icone PDF do JORNAL mais recente apos login.
+	- Workflow daily_run com fail-fast real no step do scraper (timeout retorna erro corretamente).
+	- Mascaramento de secrets carregados do blob SECRETES para evitar vazamento em log.
+	- Timeout padrao do scraper reduzido para 90s (SCRAPER_TIMEOUT_SECONDS).
+- Commit dc128ad:
+	- Restricao de clique ao gatilho de PDF (icone mdi-file-pdf / Visualizar PDF), evitando clique em card.
+	- Diagnostico extra em artifacts: listagem_cards_summary.txt e jornal_not_found.*
+
+Ultimo problema confirmado antes deste prompt:
+- Em run anterior, o scraper nao entregou PDF e o analyzer quebrou com FileNotFoundError de data/diario_sm_atual.pdf.
+- O erro estava mascarado por logica de exit code no workflow, ja corrigida.
+
+Objetivo da retomada:
+1. Executar novo workflow_dispatch pelo botao da app ou via Actions.
+2. Verificar se o fast-path clicou no icone PDF do JORNAL rapidamente.
+3. Confirmar geracao de data/diario_sm_atual.pdf e data/clipagem_hoje.json.
+4. Se falhar, diagnosticar com base nos artifacts e aplicar fix minimo.
+
+Checklist obrigatorio da analise no proximo terminal:
+1. Ler status e steps do run mais recente.
+2. Inspecionar logs do step "Executar Daily Scraper" (tempo total, tentativa fast-path, motivo da falha).
+3. Inspecionar artifacts, especialmente:
+	 - /tmp/listagem_cards_summary.txt
+	 - /tmp/jornal_not_found.html
+	 - /tmp/card_jornal.html
+	 - /tmp/pdf_icon_context.html
+4. Validar se houve timeout (exit code 124) ou falha funcional (exit != 0).
+5. Se necessario, ajustar somente os seletores do icone PDF mantendo a regra: nunca clicar no card.
+
+Criterio de sucesso:
+- O scraper baixa o PDF do JORNAL dentro do timeout objetivo e o analyzer conclui gerando clipagem_hoje.json.
+
+Formato da resposta esperada:
+- Resultado do run: sucesso/falha.
+- Causa raiz (1 frase).
+- Correcoes aplicadas (se houver).
+- Proximo passo unico e objetivo.
+```
