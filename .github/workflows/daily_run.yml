@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   clipagem-automation:
+    if: ${{ false }} # Pausado provisoriamente
     runs-on: ubuntu-latest
     
     steps:
@@ -164,7 +165,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: login-debug-${{ github.run_id }}
-          path: /tmp/login_error.*
+          path: |
+            /tmp/login_error.*
+            /tmp/listagem_logada.*
+            /tmp/public_legal_filter_*.html
+            /tmp/card_jornal.html
+            /tmp/card_classificados.html
+            /tmp/pdf_icon_context.html
+            /tmp/filtro_debug.png
           if-no-files-found: ignore
           retention-days: 7
 

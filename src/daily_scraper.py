@@ -8,11 +8,13 @@ import sys
 import time
 import glob
 import stat
+import random
 import re
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 from selenium import webdriver
+from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
@@ -45,6 +47,158 @@ DIARIO_LOGIN_URL = os.getenv("DIARIO_LOGIN_URL", "")
 DIARIO_ACCESS_URL = os.getenv("DIARIO_ACCESS_URL", "")
 DIARIO_USER = os.getenv("DIARIO_USER", "")
 DIARIO_PASSWORD = os.getenv("DIARIO_PASS", "")
+
+
+def _save_debug_html(file_name, html_content):
+    """Salva HTML de debug em /tmp para inspeção em falhas de seleção."""
+    if not html_content:
+        return
+    try:
+        file_path = os.path.join("/tmp", file_name)
+        with open(file_path, "w", encoding="utf-8") as handle:
+            handle.write(html_content)
+        print(f"[DEBUG] HTML salvo: {file_path}")
+    except Exception as e:
+        print(f"[DEBUG] Falha ao salvar {file_name}: {e}")
+
+
+def _save_element_html(driver, element, file_name):
+    """Salva outerHTML de um elemento Web para depuração."""
+    try:
+        outer_html = driver.execute_script("return arguments[0].outerHTML;", element)
+        _save_debug_html(file_name, outer_html)
+    except Exception as e:
+        print(f"[DEBUG] Falha ao extrair outerHTML ({file_name}): {e}")
+
+
+def _save_icon_context_html(driver, icon_element, file_name, levels=3):
+    """Salva HTML do ícone PDF e seus ancestrais para depuração estrutural."""
+    try:
+        context_html = driver.execute_script(
+            """
+            const el = arguments[0];
+            const maxLevels = arguments[1];
+            const parts = [];
+            let node = el;
+            let level = 0;
+            while (node && level <= maxLevels) {
+                parts.push(`<!-- level ${level} -->\n${node.outerHTML}`);
+                node = node.parentElement;
+                level += 1;
+            }
+            return parts.join("\n\n");
+            """,
+            icon_element,
+            levels,
+        )
+        _save_debug_html(file_name, context_html)
+    except Exception as e:
+        print(f"[DEBUG] Falha ao salvar contexto do ícone PDF: {e}")
+
+
+def _save_listing_page_debug(driver):
+    """Salva HTML da listagem logada e screenshot da tela atual."""
+    try:
+        driver.save_screenshot("/tmp/listagem_logada.png")
+        print("[DEBUG] Screenshot salvo: /tmp/listagem_logada.png")
+    except Exception as e:
+        print(f"[DEBUG] Falha ao salvar screenshot da listagem: {e}")
+
+    try:
+        _save_debug_html("listagem_logada.html", driver.page_source)
+    except Exception as e:
+        print(f"[DEBUG] Falha ao salvar HTML da listagem: {e}")
+
+
+def _human_pause(min_seconds=0.25, max_seconds=0.9):
+    """Pausa curta com jitter para reduzir padrão rígido de automação."""
+    time.sleep(random.uniform(min_seconds, max_seconds))
+
+
+def _human_scroll_into_view(driver, element):
+    """Rola até o elemento com pequenas pausas para simular navegação humana."""
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+        _human_pause(0.2, 0.5)
+    except Exception as e:
+        print(f"[HUMAN] Falha ao rolar até elemento: {e}")
+
+
+def _human_click(driver, element, label="elemento"):
+    """Tenta clicar de forma natural com fallback para clique via JavaScript."""
+    _human_scroll_into_view(driver, element)
+    _human_pause(0.15, 0.45)
+    try:
+        ActionChains(driver).move_to_element(element).pause(random.uniform(0.1, 0.4)).click().perform()
+        print(f"[HUMAN] Clique realizado com ActionChains em {label}")
+        return
+    except Exception:
+        pass
+
+    try:
+        element.click()
+        print(f"[HUMAN] Clique direto realizado em {label}")
+        return
+    except Exception:
+        pass
+
+    driver.execute_script("arguments[0].click();", element)
+    print(f"[HUMAN] Clique via JavaScript realizado em {label}")
+
+
+def _parse_edition_date_from_card(driver, card_element):
+    """Extrai data da edição no formato dd/mm/yyyy a partir do texto do card."""
+    try:
+        card_text = driver.execute_script("return arguments[0].innerText;", card_element) or ""
+    except Exception:
+        card_text = ""
+
+    match = re.search(r"Data\s*Edi(?:ç|c)[aã]o\s*:\s*(\d{2}/\d{2}/\d{4})", card_text, flags=re.IGNORECASE)
+    if not match:
+        return None
+
+    try:
+        return datetime.strptime(match.group(1), "%d/%m/%Y")
+    except ValueError:
+        return None
+
+
+def _is_jornal_card(driver, card_element):
+    """Valida se o card corresponde a uma edição do tipo JORNAL."""
+    try:
+        card_type = (driver.execute_script("return arguments[0].querySelector('h5')?.innerText || '';", card_element) or "").strip().upper()
+        if card_type == "JORNAL":
+            return True
+    except Exception:
+        pass
+
+    try:
+        img_src = driver.execute_script("return arguments[0].querySelector('img')?.getAttribute('src') || '';", card_element) or ""
+        return "/JORNAL/" in img_src.upper()
+    except Exception:
+        return False
+
+
+def _select_latest_jornal_card(driver):
+    """Seleciona o card JORNAL com data mais recente entre os cards visíveis."""
+    cards = driver.find_elements(By.XPATH, "//div[contains(@class, 'suita-block-home') or contains(@class, 'v-card')]")
+    candidates = []
+
+    for card in cards:
+        if not _is_jornal_card(driver, card):
+            continue
+        edition_date = _parse_edition_date_from_card(driver, card)
+        if edition_date is None:
+            continue
+        candidates.append((edition_date, card))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    latest_date, latest_card = candidates[0]
+    print(f"[PDF] Card JORNAL mais recente selecionado: {latest_date.strftime('%d/%m/%Y')}")
+    return latest_card
 
 
 # ==================== LIMPEZA INICIAL ====================
@@ -335,9 +489,11 @@ def perform_login(driver):
             raise Exception("Campo de usuário não encontrado com nenhum seletor")
         
         print(f"[LOGIN] Campo de Usuário encontrado")
+        _human_scroll_into_view(driver, username_field)
         username_field.clear()
+        _human_pause(0.15, 0.4)
         username_field.send_keys(DIARIO_USER)
-        time.sleep(0.5)
+        _human_pause(0.25, 0.7)
         print(f"[LOGIN] Usuário preenchido: {DIARIO_USER[:3]}***")
         
         # ==================== CAMPO DE SENHA ====================
@@ -386,9 +542,11 @@ def perform_login(driver):
             raise Exception("Campo de senha não encontrado com nenhum seletor")
         
         print(f"[LOGIN] Campo de Senha encontrado")
+        _human_scroll_into_view(driver, password_field)
         password_field.clear()
+        _human_pause(0.15, 0.4)
         password_field.send_keys(DIARIO_PASSWORD)
-        time.sleep(0.5)
+        _human_pause(0.25, 0.7)
         print(f"[LOGIN] Senha preenchida")
         
         # ==================== BOTÃO DE ENTRAR ====================
@@ -425,7 +583,7 @@ def perform_login(driver):
             raise Exception("Botão 'Entrar' não encontrado com nenhum seletor")
         
         print(f"[LOGIN] Botão 'Entrar' encontrado")
-        driver.execute_script("arguments[0].click();", login_button)
+        _human_click(driver, login_button, label="botão Entrar")
         print(f"[LOGIN] Botão clicado. Aguardando redirecionamento...")
         
         # Aguardar login ser completado
@@ -536,17 +694,25 @@ def set_publication_filter(driver):
         if not dropdown_input:
             print("[FILTRO] AVISO: Dropdown não encontrado, continuando sem filtro...")
             return
+
+        # Item de debug: HTML do elemento do filtro identificado
+        _save_element_html(driver, dropdown_input, "public_legal_filter_input.html")
+
+        current_value = (dropdown_input.get_attribute("value") or "").strip().lower()
+        if current_value == "exceto":
+            print("[FILTRO] Filtro já está em 'Exceto'")
+            _save_debug_html("public_legal_filter_after.html", driver.page_source)
+            return
         
         # Clicar no dropdown para abrir as opções
-        driver.execute_script("arguments[0].click();", dropdown_input)
+        _human_click(driver, dropdown_input, label="filtro Public. Legal")
         print("[FILTRO] Dropdown clicado, aguardando opções...")
-        time.sleep(5)  # Aumentar tempo de espera
-        
-        # Tentar scroll ou foco para forçar carregamento
+        _human_pause(1.2, 2.5)
+        # Tentar foco adicional para forçar carregamento de opções em layouts instáveis
         try:
             driver.execute_script("arguments[0].scrollIntoView();", dropdown_input)
-            time.sleep(2)
-        except:
+            _human_pause(0.8, 1.8)
+        except Exception:
             pass
         
         # Debug: Listar todas as opções disponíveis
@@ -615,28 +781,23 @@ def set_publication_filter(driver):
             return
         
         # Clicar na opção "Exceto"
-        driver.execute_script("arguments[0].click();", exceto_option)
+        _human_click(driver, exceto_option, label="opção Exceto")
         print("[FILTRO] Opção 'Exceto' selecionada!")
         
         # Aguardar filtro ser aplicado
-        time.sleep(2)
-        
-        # Validação: Verificar se filtro foi aplicado
+        _human_pause(1.5, 3.0)
+        # Validação: conferir valor final do dropdown
         try:
             current_value = dropdown_input.get_attribute("value")
             print(f"[FILTRO] Valor atual do dropdown: '{current_value}'")
-            if "exceto" in current_value.lower():
+            if current_value and "exceto" in current_value.lower():
                 print("[FILTRO] ✓ Filtro aplicado com sucesso!")
             else:
                 print("[FILTRO] ⚠️ AVISO: Filtro pode não ter sido aplicado corretamente")
         except Exception as e:
             print(f"[FILTRO] Não foi possível validar filtro: {e}")
-        
-        print("[FILTRO] Filtro 'Public. Legal' configurado como 'Exceto'")
-        
-        # Aguardar filtro ser aplicado
-        time.sleep(3)
         print("[FILTRO] Filtro aplicado com sucesso - exibindo apenas edições jornalísticas")
+        _save_debug_html("public_legal_filter_after.html", driver.page_source)
         
     except Exception as e:
         print(f"[FILTRO] ERRO ao configurar filtro: {e}")
@@ -779,15 +940,16 @@ def access_and_download_pdf(driver):
         # Aguardar página carregar
         time.sleep(5)
         print("[PDF] Página de acesso carregada")
+        _save_listing_page_debug(driver)
         
         if APPLY_PUBLIC_LEGAL_FILTER:
             set_publication_filter(driver)
-            time.sleep(2)
+            _human_pause(1.0, 2.2)
         else:
             print("[FILTRO] Ignorado (APPLY_PUBLIC_LEGAL_FILTER=false)")
 
         search_edition_by_name(driver, "JORNAL")
-        time.sleep(2)
+        _human_pause(1.0, 2.0)
 
         print("[PDF] Localizando cards de edição e selecionando JORNAL mais recente...")
         jornal_candidates = get_jornal_candidates(driver)
@@ -812,7 +974,20 @@ def access_and_download_pdf(driver):
         )
 
         selected = jornal_candidates[0]
+        _save_element_html(driver, selected["card"], "card_jornal.html")
+
+        try:
+            classificados_card = driver.find_element(
+                By.XPATH,
+                "(//div[contains(@class, 'suita-block-home')][.//h5[normalize-space()='CLASSIFICADOS']])[1]",
+            )
+            _save_element_html(driver, classificados_card, "card_classificados.html")
+            print("[PDF] Card CLASSIFICADOS salvo para debug")
+        except Exception:
+            print("[PDF] Card CLASSIFICADOS não encontrado para debug")
+
         pdf_icon = selected["pdf_icon"]
+        _save_icon_context_html(driver, pdf_icon, "pdf_icon_context.html", levels=3)
         print(
             "[PDF] Selecionado card JORNAL mais recente: "
             f"edição={selected['edition_number']}, "
@@ -821,7 +996,7 @@ def access_and_download_pdf(driver):
         print(f"[PDF] Card selecionado (debug): {selected['debug']}")
         
         # Clicar no ícone para iniciar download
-        driver.execute_script("arguments[0].click();", pdf_icon)
+        _human_click(driver, pdf_icon, label="ícone PDF")
         print("[PDF] Clique no ícone realizado. Aguardando download...")
         
     except Exception as e:
