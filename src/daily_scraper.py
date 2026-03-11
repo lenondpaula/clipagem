@@ -40,6 +40,7 @@ DATA_FOLDER = os.path.join(os.path.dirname(__file__), "..", "data")
 DOWNLOAD_TIMEOUT = 30
 LOGIN_TIMEOUT = 15
 PDF_WAIT_TIMEOUT = 20
+CARD_DISCOVERY_TIMEOUT = int(os.getenv("CARD_DISCOVERY_TIMEOUT", "12"))
 PDF_FILENAME = "diario_sm_atual.pdf"
 APPLY_PUBLIC_LEGAL_FILTER = os.getenv("APPLY_PUBLIC_LEGAL_FILTER", "false").strip().lower() in ("1", "true", "yes", "on")
 
@@ -809,6 +810,8 @@ def _parse_card_date_ddmmyyyy(text):
     """Extrai data no formato DD/MM/YYYY de um texto de card."""
     match = re.search(r"Data\s*Edi[çc][ãa]o\s*:\s*(\d{2}/\d{2}/\d{4})", text, re.IGNORECASE)
     if not match:
+        match = re.search(r"(\d{2}/\d{2}/\d{4})", text)
+    if not match:
         return None
     try:
         return datetime.strptime(match.group(1), "%d/%m/%Y")
@@ -818,13 +821,93 @@ def _parse_card_date_ddmmyyyy(text):
 
 def _parse_card_edition_number(text):
     """Extrai número da edição a partir de texto como 'Edição Nº 7342'."""
-    match = re.search(r"Edi[çc][ãa]o\s*N[ºo]?\s*(\d+)", text, re.IGNORECASE)
+    match = re.search(r"Edi[çc][ãa]o\s*N[º°o]?\s*(\d+)", text, re.IGNORECASE)
+    if not match:
+        match = re.search(r"\bN[º°o]?\s*(\d{3,})\b", text, re.IGNORECASE)
     if not match:
         return None
     try:
         return int(match.group(1))
     except ValueError:
         return None
+
+
+def _is_probable_jornal_card(card, card_text_lower):
+    """Determina se o card parece ser de JORNAL, mesmo com variações de layout."""
+    blocked_terms = ["valvi", "folheto", "classificados", "classificado", "public. legal", "publicacao legal"]
+    if any(tag in card_text_lower for tag in blocked_terms):
+        return False
+
+    if "jornal" in card_text_lower:
+        return True
+
+    try:
+        img_elements = card.find_elements(By.XPATH, ".//img")
+        for img in img_elements:
+            src = (img.get_attribute("src") or "").lower()
+            alt = (img.get_attribute("alt") or "").lower()
+            if "jornal" in src or "jornal" in alt:
+                return True
+    except Exception:
+        pass
+
+    try:
+        headings = card.find_elements(By.XPATH, ".//*[self::h4 or self::h5 or self::h6 or contains(@class,'title')]")
+        for heading in headings:
+            htxt = (heading.text or "").strip().lower()
+            if "jornal" in htxt:
+                return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _write_cards_summary(driver, cards):
+    """Gera resumo textual dos cards renderizados para acelerar diagnóstico em CI."""
+    lines = [f"total_cards={len(cards)}"]
+    for idx, card in enumerate(cards[:20]):
+        try:
+            txt = (card.text or card.get_attribute("innerText") or "").strip().replace("\n", " | ")
+            txt = re.sub(r"\s+", " ", txt)
+            txt = txt[:260]
+            has_pdf = bool(card.find_elements(By.XPATH, ".//*[contains(translate(@title, 'pdf', 'PDF'), 'PDF') or contains(@class, 'mdi-file-pdf')]"))
+            lines.append(f"[{idx}] has_pdf={has_pdf} text={txt}")
+        except Exception as exc:
+            lines.append(f"[{idx}] erro={exc}")
+
+    file_path = "/tmp/listagem_cards_summary.txt"
+    try:
+        with open(file_path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines))
+        print(f"[DEBUG] Resumo dos cards salvo: {file_path}")
+    except Exception as e:
+        print(f"[DEBUG] Falha ao salvar resumo dos cards: {e}")
+
+
+def _is_valid_pdf_trigger_element(element):
+    """Valida se o elemento é um gatilho real de PDF (ícone/botão PDF), evitando clique em card."""
+    try:
+        tag = (element.tag_name or "").lower()
+    except Exception:
+        tag = ""
+
+    class_attr = (element.get_attribute("class") or "").lower()
+    title_attr = (element.get_attribute("title") or "").lower()
+    aria_label = (element.get_attribute("aria-label") or "").lower()
+    role_attr = (element.get_attribute("role") or "").lower()
+
+    # Caso clássico do site: <i class="mdi-file-pdf-box ... v-icon--clickable" title="Visualizar PDF">
+    if tag == "i" and "mdi-file-pdf" in class_attr:
+        return True
+
+    if "visualizar pdf" in title_attr:
+        return True
+
+    if "pdf" in aria_label and role_attr in ("button", "link"):
+        return True
+
+    return False
 
 
 def search_edition_by_name(driver, edition_name="JORNAL"):
@@ -864,17 +947,31 @@ def search_edition_by_name(driver, edition_name="JORNAL"):
 
 def get_jornal_candidates(driver):
     """Coleta cards válidos de JORNAL com ícone PDF clicável."""
-    card_xpath = "//div[contains(@class,'suita-block-home') and contains(@class,'v-card')]"
+    card_xpaths = [
+        "//div[contains(@class,'suita-block-home') and contains(@class,'v-card')]",
+        "//div[contains(@class,'suita-block-home')]",
+        "//div[contains(@class,'v-card')]",
+        "//article[contains(@class,'card') or contains(@class,'edition')]",
+    ]
 
     try:
-        WebDriverWait(driver, 12).until(
-            EC.presence_of_all_elements_located((By.XPATH, card_xpath))
+        WebDriverWait(driver, CARD_DISCOVERY_TIMEOUT).until(
+            EC.presence_of_all_elements_located((By.XPATH, "//div[contains(@class,'suita-block-home') or contains(@class,'v-card') or contains(@class,'edition')]") )
         )
     except Exception:
         pass
 
-    candidate_cards = driver.find_elements(By.XPATH, card_xpath)
+    candidate_cards = []
+    seen_ids = set()
+    for card_xpath in card_xpaths:
+        for card in driver.find_elements(By.XPATH, card_xpath):
+            if card.id in seen_ids:
+                continue
+            seen_ids.add(card.id)
+            candidate_cards.append(card)
+
     print(f"[PDF] Cards do grid encontrados: {len(candidate_cards)}")
+    _write_cards_summary(driver, candidate_cards)
 
     jornal_candidates = []
     for idx, card in enumerate(candidate_cards):
@@ -888,11 +985,7 @@ def get_jornal_candidates(driver):
             card_text = (card.get_attribute("innerText") or "").strip()
         card_text_lower = card_text.lower()
 
-        if not card_text:
-            continue
-        if "jornal" not in card_text_lower:
-            continue
-        if any(tag in card_text_lower for tag in ["valvi", "folheto", "classificados", "classificado"]):
+        if not _is_probable_jornal_card(card, card_text_lower):
             continue
 
         edition_number = _parse_card_edition_number(card_text)
@@ -900,15 +993,15 @@ def get_jornal_candidates(driver):
 
         pdf_icon = None
         icon_selectors = [
-            ".//i[contains(@class,'mdi-file-pdf-box') and contains(@class,'v-icon--clickable')]",
-            ".//*[@title='Visualizar PDF']",
-            ".//*[@title='Visualizar PDF' or contains(@title, 'PDF')]",
+            ".//i[contains(@class,'mdi-file-pdf-box') and contains(@class,'v-icon--clickable') and (@title='Visualizar PDF' or contains(@title,'PDF'))]",
+            ".//i[contains(@class,'mdi-file-pdf') and contains(@class,'v-icon--clickable')]",
+            ".//i[@title='Visualizar PDF']",
+            ".//i[contains(@title,'PDF') and contains(@class,'v-icon')]",
         ]
         for icon_selector in icon_selectors:
             try:
                 pdf_icon = card.find_element(By.XPATH, icon_selector)
-                if pdf_icon.is_displayed():
-                    break
+                break
             except Exception:
                 continue
 
@@ -937,8 +1030,15 @@ def access_and_download_pdf(driver):
     driver.get(DIARIO_ACCESS_URL)
     
     try:
-        # Aguardar página carregar
-        time.sleep(5)
+        # Aguardar página carregar com limite objetivo
+        try:
+            WebDriverWait(driver, PDF_WAIT_TIMEOUT).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+        except Exception:
+            print("[PDF] AVISO: document.readyState não confirmou 'complete' dentro do tempo limite")
+
+        _human_pause(0.8, 1.6)
         print("[PDF] Página de acesso carregada")
         _save_listing_page_debug(driver)
         
@@ -950,6 +1050,18 @@ def access_and_download_pdf(driver):
 
         search_edition_by_name(driver, "JORNAL")
         _human_pause(1.0, 2.0)
+
+        try:
+            WebDriverWait(driver, 8).until(
+                EC.presence_of_element_located(
+                    (
+                        By.XPATH,
+                        "//i[contains(@class,'mdi-file-pdf') or contains(@title,'Visualizar PDF') or contains(@aria-label,'PDF')]",
+                    )
+                )
+            )
+        except Exception:
+            print("[PDF] AVISO: Ícone de PDF não apareceu no tempo esperado; tentando varredura por cards")
 
         print("[PDF] Localizando cards de edição e selecionando JORNAL mais recente...")
         jornal_candidates = get_jornal_candidates(driver)
@@ -987,11 +1099,18 @@ def access_and_download_pdf(driver):
             print("[PDF] Card CLASSIFICADOS não encontrado para debug")
 
         pdf_icon = selected["pdf_icon"]
+        if not _is_valid_pdf_trigger_element(pdf_icon):
+            raise Exception("Elemento selecionado não é um gatilho de PDF válido")
+
         _save_icon_context_html(driver, pdf_icon, "pdf_icon_context.html", levels=3)
         print(
             "[PDF] Selecionado card JORNAL mais recente: "
             f"edição={selected['edition_number']}, "
             f"data={selected['edition_date'].strftime('%d/%m/%Y') if selected['edition_date'] else 'N/A'}"
+        )
+        print(
+            "[PDF] Gatilho PDF validado: "
+            f"tag={pdf_icon.tag_name}, title='{pdf_icon.get_attribute('title')}', class='{pdf_icon.get_attribute('class')}'"
         )
         print(f"[PDF] Card selecionado (debug): {selected['debug']}")
         

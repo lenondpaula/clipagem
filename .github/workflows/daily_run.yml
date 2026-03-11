@@ -80,7 +80,15 @@ jobs:
       - name: 🤖 Executar Daily Scraper
         run: |
           echo "[RUN] Iniciando daily_scraper.py..."
-          python src/daily_scraper.py
+          SCRAPER_TIMEOUT_SECONDS="${SCRAPER_TIMEOUT_SECONDS:-150}"
+          echo "[RUN] Timeout objetivo do scraper: ${SCRAPER_TIMEOUT_SECONDS}s"
+          if ! timeout "${SCRAPER_TIMEOUT_SECONDS}" python src/daily_scraper.py; then
+            exit_code=$?
+            if [ "$exit_code" -eq 124 ]; then
+              echo "✗ ERRO: daily_scraper.py excedeu o tempo limite de ${SCRAPER_TIMEOUT_SECONDS}s"
+            fi
+            exit "$exit_code"
+          fi
           
           echo "[RUN] Verificando saída..."
           ls -lh data/
@@ -167,6 +175,8 @@ jobs:
           path: |
             /tmp/login_error.*
             /tmp/listagem_logada.*
+            /tmp/listagem_cards_summary.txt
+            /tmp/jornal_not_found.*
             /tmp/public_legal_filter_*.html
             /tmp/card_jornal.html
             /tmp/card_classificados.html
