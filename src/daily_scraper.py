@@ -591,16 +591,21 @@ def perform_login(driver):
         
         # Seletores para campo de senha (em ordem de preferência)
         password_selectors = [
+            # Markup Vuetify atual do site
+            "//label[contains(., 'Senha')]/following::input[contains(@class, 'v-field__input') and @type='password'][1]",
+            "//input[contains(@class, 'v-field__input') and @type='password' and @maxlength='20']",
+            "//input[@type='password' and contains(@aria-labelledby, '-label') and @maxlength='20']",
+
+            # Por type=password
+            "//input[@type='password']",
+            "//input[contains(@type, 'password')]",
+
             # Por placeholder
             "//input[@placeholder='Senha']",
             "//input[@placeholder='senha']",
             "//input[@placeholder='Password']",
             "//input[contains(@placeholder, 'Senha')]",
             "//input[contains(@placeholder, 'Password')]",
-            
-            # Por type=password
-            "//input[@type='password']",
-            "//input[contains(@type, 'password')]",
             
             # Por atributo name/id
             "//input[contains(@name, 'pass')]",
