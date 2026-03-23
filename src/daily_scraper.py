@@ -46,8 +46,9 @@ PDF_WAIT_TIMEOUT = 20
 LISTING_READY_TIMEOUT = int(os.getenv("LISTING_READY_TIMEOUT", str(PDF_WAIT_TIMEOUT)))
 CARD_DISCOVERY_TIMEOUT = int(os.getenv("CARD_DISCOVERY_TIMEOUT", "12"))
 FAST_PDF_CLICK_TIMEOUT = int(os.getenv("FAST_PDF_CLICK_TIMEOUT", "14"))
+FILTER_TOTAL_TIMEOUT = int(os.getenv("FILTER_TOTAL_TIMEOUT", "10"))
 PDF_FILENAME = "diario_sm_atual.pdf"
-APPLY_PUBLIC_LEGAL_FILTER = os.getenv("APPLY_PUBLIC_LEGAL_FILTER", "true").strip().lower() in ("1", "true", "yes", "on")
+APPLY_PUBLIC_LEGAL_FILTER = os.getenv("APPLY_PUBLIC_LEGAL_FILTER", "false").strip().lower() in ("1", "true", "yes", "on")
 
 DIARIO_LOGIN_URL = os.getenv("DIARIO_LOGIN_URL", "")
 DIARIO_ACCESS_URL = os.getenv("DIARIO_ACCESS_URL", "")
@@ -717,10 +718,15 @@ def perform_login(driver):
 def set_publication_filter(driver):
     """Configura o filtro 'Public. Legal' como 'Exceto' para exibir apenas edições jornalísticas"""
     print("[FILTRO] Configurando filtro 'Public. Legal' como 'Exceto'...")
+    start_ts = time.monotonic()
+    deadline = start_ts + FILTER_TOTAL_TIMEOUT
+
+    def remaining_budget():
+        return max(0.0, deadline - time.monotonic())
     
     try:
-        # Aguardar página carregar completamente
-        time.sleep(3)
+        # Evita bloquear a execução por muito tempo nesta etapa.
+        _human_pause(0.25, 0.7)
         
         # Debug: Salvar screenshot para análise
         try:
@@ -820,11 +826,11 @@ def set_publication_filter(driver):
         # Clicar no dropdown para abrir as opções
         _human_click(driver, dropdown_input, label="filtro Public. Legal")
         print("[FILTRO] Dropdown clicado, aguardando opções...")
-        _human_pause(1.2, 2.5)
+        _human_pause(0.25, 0.6)
         # Tentar foco adicional para forçar carregamento de opções em layouts instáveis
         try:
             driver.execute_script("arguments[0].scrollIntoView();", dropdown_input)
-            _human_pause(0.8, 1.8)
+            _human_pause(0.15, 0.35)
         except Exception:
             pass
         
@@ -842,9 +848,13 @@ def set_publication_filter(driver):
         if len(all_options) == 0:
             print("[FILTRO] Nenhuma opção encontrada, tentando clicar novamente...")
             driver.execute_script("arguments[0].click();", dropdown_input)
-            time.sleep(3)
+            _human_pause(0.25, 0.6)
             all_options = driver.find_elements(By.XPATH, "//*[@role='option'] | //div[@role='listitem'] | //div[contains(@class, 'v-list-item')]")
             print(f"[FILTRO] Após segundo clique - Total de opções: {len(all_options)}")
+
+        if len(all_options) == 0:
+            print("[FILTRO] AVISO: Menu sem opções detectáveis; seguindo sem filtro para não estourar timeout")
+            return
         
         # Seletores para encontrar a opção "Exceto"
         exceto_selectors = [
@@ -867,8 +877,11 @@ def set_publication_filter(driver):
         print("[FILTRO] Procurando opção 'Exceto'...")
         exceto_option = None
         for selector in exceto_selectors:
+            budget = remaining_budget()
+            if budget <= 0:
+                break
             try:
-                exceto_option = WebDriverWait(driver, 7).until(
+                exceto_option = WebDriverWait(driver, min(1.2, budget), poll_frequency=0.2).until(
                     EC.element_to_be_clickable((By.XPATH, selector))
                 )
                 print(f"[FILTRO] Opção 'Exceto' encontrada com seletor: {selector}")
@@ -898,7 +911,7 @@ def set_publication_filter(driver):
         print("[FILTRO] Opção 'Exceto' selecionada!")
         
         # Aguardar filtro ser aplicado
-        _human_pause(1.5, 3.0)
+        _human_pause(0.25, 0.7)
         # Validação: conferir valor final do dropdown
         try:
             current_value = dropdown_input.get_attribute("value")
@@ -911,6 +924,8 @@ def set_publication_filter(driver):
             print(f"[FILTRO] Não foi possível validar filtro: {e}")
         print("[FILTRO] Filtro aplicado com sucesso - exibindo apenas edições jornalísticas")
         _save_debug_html("public_legal_filter_after.html", driver.page_source)
+        elapsed = time.monotonic() - start_ts
+        print(f"[FILTRO] Tempo total da etapa: {elapsed:.1f}s")
         
     except Exception as e:
         print(f"[FILTRO] ERRO ao configurar filtro: {e}")
@@ -1013,13 +1028,70 @@ def _is_valid_pdf_trigger_element(element):
     if tag == "i" and "mdi-file-pdf" in class_attr:
         return True
 
+    if tag in ("button", "a") and ("pdf" in title_attr or "pdf" in aria_label):
+        return True
+
     if "visualizar pdf" in title_attr:
         return True
 
     if "pdf" in aria_label and role_attr in ("button", "link"):
         return True
 
+    if "mdi-file-pdf" in class_attr and role_attr in ("button", "link"):
+        return True
+
+    # Evita card/container como alvo direto.
+    if tag in ("div", "article") and ("v-card" in class_attr or "suita-block-home" in class_attr):
+        return False
+
+    # fallback: aceita wrappers clicáveis que contenham ícone PDF dentro.
+    if tag in ("button", "a", "span", "div"):
+        try:
+            nested_pdf_icons = element.find_elements(By.XPATH, ".//i[contains(@class, 'mdi-file-pdf')]")
+            if nested_pdf_icons:
+                return True
+        except Exception:
+            pass
+
     return False
+
+
+def _resolve_click_target_for_pdf(card, element):
+    """Resolve alvo clicável apropriado para o PDF, priorizando botão/link acima do ícone."""
+    if _is_valid_pdf_trigger_element(element):
+        try:
+            clickable_ancestor = element.find_element(
+                By.XPATH,
+                "./ancestor::*[(self::button or self::a or @role='button' or @role='link')][1]",
+            )
+            if clickable_ancestor and _is_valid_pdf_trigger_element(clickable_ancestor):
+                return clickable_ancestor
+        except Exception:
+            pass
+        return element
+
+    try:
+        clickable_ancestor = element.find_element(
+            By.XPATH,
+            "./ancestor::*[(self::button or self::a or @role='button' or @role='link')][1]",
+        )
+        if clickable_ancestor and _is_valid_pdf_trigger_element(clickable_ancestor):
+            return clickable_ancestor
+    except Exception:
+        pass
+
+    try:
+        wrappers = card.find_elements(
+            By.XPATH,
+            ".//*[self::button or self::a or @role='button' or @role='link'][.//i[contains(@class,'mdi-file-pdf')] or contains(@title,'PDF') or contains(@aria-label,'PDF')]",
+        )
+        for wrapper in wrappers:
+            if _is_valid_pdf_trigger_element(wrapper):
+                return wrapper
+    except Exception:
+        pass
+
+    return None
 
 
 def search_edition_by_name(driver, edition_name="JORNAL"):
@@ -1140,10 +1212,15 @@ def get_jornal_candidates(driver):
             ".//i[contains(@class,'mdi-file-pdf') and contains(@class,'v-icon--clickable')]",
             ".//i[@title='Visualizar PDF']",
             ".//i[contains(@title,'PDF') and contains(@class,'v-icon')]",
+            ".//*[self::button or self::a][contains(@title,'PDF') or contains(@aria-label,'PDF') or .//i[contains(@class,'mdi-file-pdf')]]",
+            ".//*[@role='button' or @role='link'][contains(@title,'PDF') or contains(@aria-label,'PDF') or .//i[contains(@class,'mdi-file-pdf')]]",
         ]
         for icon_selector in icon_selectors:
             try:
-                pdf_icon = card.find_element(By.XPATH, icon_selector)
+                raw_pdf_element = card.find_element(By.XPATH, icon_selector)
+                pdf_icon = _resolve_click_target_for_pdf(card, raw_pdf_element)
+                if not pdf_icon:
+                    continue
                 break
             except Exception:
                 continue
@@ -1164,12 +1241,20 @@ def get_jornal_candidates(driver):
             f"[PDF] Candidato {idx}: edição={edition_number}, data={edition_date.strftime('%d/%m/%Y') if edition_date else 'N/A'}"
         )
 
+    jornal_candidates.sort(
+        key=lambda item: (
+            item["edition_date"] if item["edition_date"] is not None else datetime.min,
+            item["edition_number"],
+        ),
+        reverse=True,
+    )
+
     return jornal_candidates
 
 
 def click_latest_jornal_pdf_fast(driver):
-    """Tenta caminho rápido: clicar direto no ícone PDF do primeiro JORNAL disponível."""
-    print("[PDF][FAST] Tentando clique imediato no PDF do primeiro JORNAL disponível...")
+    """Tenta caminho rápido: clicar no gatilho de PDF do JORNAL mais recente disponível."""
+    print("[PDF][FAST] Tentando clique imediato no PDF do JORNAL mais recente disponível...")
     _write_stage_marker("pdf_fast:start")
 
     # Janela curta para a SPA renderizar os cards principais.
@@ -1189,7 +1274,7 @@ def click_latest_jornal_pdf_fast(driver):
             _save_element_html(driver, selected["card"], "card_jornal.html")
             _save_icon_context_html(driver, pdf_icon, "pdf_icon_context.html", levels=3)
             print(
-                "[PDF][FAST] Selecionado primeiro JORNAL disponível: "
+                "[PDF][FAST] Selecionado JORNAL mais recente disponível: "
                 f"edicao={selected['edition_number']}, "
                 f"data={selected['edition_date'].strftime('%d/%m/%Y') if selected['edition_date'] else 'N/A'}"
             )
@@ -1225,12 +1310,13 @@ def access_and_download_pdf(driver):
         _save_listing_page_debug(driver)
         wait_for_listing_ready(driver)
 
-        # Garante que o grid não esteja em Public. Legal = Somente.
+        # Por padrão, mantém Public. Legal no estado vazio (sem seleção explícita).
+        # Isso evita custo de tempo/instabilidade no dropdown em ambiente CI.
         if APPLY_PUBLIC_LEGAL_FILTER:
             set_publication_filter(driver)
             _human_pause(0.5, 1.0)
         else:
-            print("[FILTRO] Ignorado (APPLY_PUBLIC_LEGAL_FILTER=false)")
+            print("[FILTRO] Mantido padrão vazio (APPLY_PUBLIC_LEGAL_FILTER=false)")
 
         # Regra principal: após login, a primeira tentativa é clicar direto no PDF do primeiro JORNAL disponível.
         if click_latest_jornal_pdf_fast(driver):
