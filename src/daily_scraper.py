@@ -961,6 +961,21 @@ def _parse_card_edition_number(text):
 
 def _is_probable_jornal_card(card, card_text_lower):
     """Determina se o card parece ser de JORNAL, mesmo com variações de layout."""
+    try:
+        # Busca H5 dentro de v-card-title para confirmar se é JORNAL.
+        # <div class="v-card-title ..."><h5>JORNAL</h5></div>
+        # Isso garante que não é CLASSIFICADOS, VALVI, etc.
+        h5_elements = card.find_elements(
+            By.XPATH,
+            ".//div[contains(@class, 'v-card-title')]//h5",
+        )
+        for h5 in h5_elements:
+            h5_text = (h5.text or "").strip().upper()
+            if h5_text == "JORNAL":
+                return True
+    except Exception:
+        pass
+
     blocked_terms = ["valvi", "folheto", "classificados", "classificado", "public. legal", "publicacao legal"]
     if any(tag in card_text_lower for tag in blocked_terms):
         return False
@@ -998,8 +1013,24 @@ def _write_cards_summary(driver, cards):
             txt = (card.text or card.get_attribute("innerText") or "").strip().replace("\n", " | ")
             txt = re.sub(r"\s+", " ", txt)
             txt = txt[:260]
-            has_pdf = bool(card.find_elements(By.XPATH, ".//*[contains(translate(@title, 'pdf', 'PDF'), 'PDF') or contains(@class, 'mdi-file-pdf')]"))
-            lines.append(f"[{idx}] has_pdf={has_pdf} text={txt}")
+            # Tenta identificar titulo do card (H5 em v-card-title)
+            card_title = "?"
+            try:
+                h5_elem = card.find_element(By.XPATH, ".//div[contains(@class, 'v-card-title')]//h5")
+                card_title = (h5_elem.text or "").strip().upper()
+            except Exception:
+                pass
+            has_pdf = bool(
+                card.find_elements(
+                    By.XPATH,
+                    ".//*[contains(translate(@title, 'PDF', 'pdf'), 'pdf') or "
+                    "contains(translate(@aria-label, 'PDF', 'pdf'), 'pdf') or "
+                    "contains(translate(@class, 'PDF', 'pdf'), 'pdf') or "
+                    "contains(translate(@href, 'PDF', 'pdf'), '.pdf') or "
+                    "contains(translate(@src, 'PDF', 'pdf'), 'pdf')]",
+                )
+            )
+            lines.append(f"[{idx}] title={card_title} has_pdf={has_pdf} text={txt}")
         except Exception as exc:
             lines.append(f"[{idx}] erro={exc}")
 
@@ -1023,12 +1054,27 @@ def _is_valid_pdf_trigger_element(element):
     title_attr = (element.get_attribute("title") or "").lower()
     aria_label = (element.get_attribute("aria-label") or "").lower()
     role_attr = (element.get_attribute("role") or "").lower()
+    href_attr = (element.get_attribute("href") or "").lower()
+    src_attr = (element.get_attribute("src") or "").lower()
 
     # Caso clássico do site: <i class="mdi-file-pdf-box ... v-icon--clickable" title="Visualizar PDF">
+    if (
+        tag == "i"
+        and "mdi-file-pdf-box" in class_attr
+        and "v-icon--clickable" in class_attr
+        and "visualizar pdf" in title_attr
+        and role_attr == "button"
+    ):
+        return True
+
+    # Compatibilidade com variações do ícone MDI.
     if tag == "i" and "mdi-file-pdf" in class_attr:
         return True
 
     if tag in ("button", "a") and ("pdf" in title_attr or "pdf" in aria_label):
+        return True
+
+    if tag == "a" and ".pdf" in href_attr:
         return True
 
     if "visualizar pdf" in title_attr:
@@ -1038,6 +1084,12 @@ def _is_valid_pdf_trigger_element(element):
         return True
 
     if "mdi-file-pdf" in class_attr and role_attr in ("button", "link"):
+        return True
+
+    if tag in ("i", "span", "button", "a") and "pdf" in class_attr:
+        return True
+
+    if tag == "img" and "pdf" in src_attr:
         return True
 
     # Evita card/container como alvo direto.
@@ -1058,6 +1110,25 @@ def _is_valid_pdf_trigger_element(element):
 
 def _resolve_click_target_for_pdf(card, element):
     """Resolve alvo clicável apropriado para o PDF, priorizando botão/link acima do ícone."""
+    try:
+        tag = (element.tag_name or "").lower()
+    except Exception:
+        tag = ""
+
+    class_attr = (element.get_attribute("class") or "").lower()
+    title_attr = (element.get_attribute("title") or "").lower()
+    role_attr = (element.get_attribute("role") or "").lower()
+
+    # Prioriza o próprio ícone canônico de download de PDF, sem promover para ancestral.
+    if (
+        tag == "i"
+        and "mdi-file-pdf-box" in class_attr
+        and "v-icon--clickable" in class_attr
+        and "visualizar pdf" in title_attr
+        and role_attr == "button"
+    ):
+        return element
+
     if _is_valid_pdf_trigger_element(element):
         try:
             clickable_ancestor = element.find_element(
@@ -1083,11 +1154,29 @@ def _resolve_click_target_for_pdf(card, element):
     try:
         wrappers = card.find_elements(
             By.XPATH,
-            ".//*[self::button or self::a or @role='button' or @role='link'][.//i[contains(@class,'mdi-file-pdf')] or contains(@title,'PDF') or contains(@aria-label,'PDF')]",
+            ".//*[self::button or self::a or @role='button' or @role='link']["
+            "contains(translate(@title,'PDF','pdf'),'pdf') or "
+            "contains(translate(@aria-label,'PDF','pdf'),'pdf') or "
+            "contains(translate(@class,'PDF','pdf'),'pdf') or "
+            "contains(translate(@href,'PDF','pdf'),'.pdf') or "
+            ".//i[contains(translate(@class,'PDF','pdf'),'pdf')] or "
+            ".//img[contains(translate(@src,'PDF','pdf'),'pdf')]"
+            "]",
         )
         for wrapper in wrappers:
             if _is_valid_pdf_trigger_element(wrapper):
                 return wrapper
+    except Exception:
+        pass
+
+    # Alguns layouts usam ícone de PDF em <img>/<span>/<i> e o clique é no ancestral.
+    try:
+        clickables = element.find_elements(
+            By.XPATH,
+            "./ancestor::*[(self::a or self::button or @role='button' or @role='link')][1]",
+        )
+        if clickables:
+            return clickables[0]
     except Exception:
         pass
 
@@ -1100,8 +1189,13 @@ def search_edition_by_name(driver, edition_name="JORNAL"):
 
     search_selectors = [
         "//input[contains(@placeholder, 'Pesquisar nome edição')]",
+        "//input[contains(@placeholder, 'Pesquisar nome edicao')]",
         "//input[contains(@placeholder, 'nome edição')]",
+        "//input[contains(@placeholder, 'nome edicao')]",
         "//input[contains(@aria-label, 'nome edição')]",
+        "//input[contains(@aria-label, 'nome edicao')]",
+        "//input[contains(@placeholder, 'Pesquisar texto nas edições')]",
+        "//input[contains(@placeholder, 'Pesquisar texto nas edicoes')]",
     ]
 
     search_input = None
@@ -1214,14 +1308,23 @@ def get_jornal_candidates(driver):
             ".//i[contains(@title,'PDF') and contains(@class,'v-icon')]",
             ".//*[self::button or self::a][contains(@title,'PDF') or contains(@aria-label,'PDF') or .//i[contains(@class,'mdi-file-pdf')]]",
             ".//*[@role='button' or @role='link'][contains(@title,'PDF') or contains(@aria-label,'PDF') or .//i[contains(@class,'mdi-file-pdf')]]",
+            ".//a[contains(translate(@href,'PDF','pdf'), '.pdf')]",
+            ".//*[self::button or self::a or self::span or self::i][contains(translate(@class,'PDF','pdf'),'pdf') or contains(translate(@title,'PDF','pdf'),'pdf') or contains(translate(@aria-label,'PDF','pdf'),'pdf')]",
+            ".//img[contains(translate(@src,'PDF','pdf'),'pdf') or contains(translate(@alt,'PDF','pdf'),'pdf')]",
         ]
         for icon_selector in icon_selectors:
             try:
-                raw_pdf_element = card.find_element(By.XPATH, icon_selector)
-                pdf_icon = _resolve_click_target_for_pdf(card, raw_pdf_element)
-                if not pdf_icon:
-                    continue
-                break
+                raw_pdf_elements = card.find_elements(By.XPATH, icon_selector)
+                for raw_pdf_element in raw_pdf_elements[:8]:
+                    resolved = _resolve_click_target_for_pdf(card, raw_pdf_element)
+                    if not resolved:
+                        continue
+                    if not resolved.is_displayed():
+                        continue
+                    pdf_icon = resolved
+                    break
+                if pdf_icon:
+                    break
             except Exception:
                 continue
 
@@ -1333,7 +1436,11 @@ def access_and_download_pdf(driver):
                 EC.presence_of_element_located(
                     (
                         By.XPATH,
-                        "//i[contains(@class,'mdi-file-pdf') or contains(@title,'Visualizar PDF') or contains(@aria-label,'PDF')]",
+                        "//*[contains(translate(@class,'PDF','pdf'),'pdf') or "
+                        "contains(translate(@title,'PDF','pdf'),'pdf') or "
+                        "contains(translate(@aria-label,'PDF','pdf'),'pdf') or "
+                        "contains(translate(@href,'PDF','pdf'),'.pdf') or "
+                        "contains(translate(@src,'PDF','pdf'),'pdf')]",
                     )
                 )
             )
