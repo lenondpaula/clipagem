@@ -33,21 +33,76 @@ Regras de execucao:
 - Se houver bloqueio externo (secret/permissao/quota), explicar claramente e sugerir acao objetiva.
 ```
 
-## Exemplo pronto para uso
+## Status Atual (Sessão 2026-03-23 - 18:25+)
+
+### 🔴 PROBLEMA IDENTIFICADO: Login não estava sendo validado efetivamente
+
+**Diagnóstico:**
+- Scraper dizia que fazia login, mas na realidade não faziam
+- Após clicar em "Entrar", apenas aguardava cegamente 5 segundos sem validação
+- Navagava para página de acesso SEM usuário autenticado
+- Resultado: Listagem mostrava apenas publicações legais (públicas), zero cards JORNAL
+- Screenshot da página continha mensagem: "Efetue login para acessar as edições do jornal"
+- Artifact listagem_cards_summary.txt confirmou: `title=VALVI, EDITAL SINDITAXI...` nenhum JORNAL
+
+**Root cause:** Credenciais corretas, site correto, mas **validação de login ausente**
+
+### ✅ SOLUÇÃO IMPLEMENTADA (Commit f3dd909 → f4xxxxx)
+
+**Mudanças em `src/daily_scraper.py`:**
+
+1. **Nova formação `_is_user_logged_in()`** (linha ~507)
+	- Valida ATIVAMENTE se usuário está logado
+	- Estratégia 1: Procura por elementos de usuário logado (botão Sair, menu de perfil, etc.)
+	- Estratégia 2: Procura por mensagens de erro de login
+	- Estratégia 3: Procura por formulário de login ainda visível → se presente, login falhou
+	- Estratégia 4: Verifica URL (se ainda em `/login`, falhou)
+	- Retorna: True (logado), False (falhou), None (ambíguo)
+
+2. **Função `perform_login()` REFATORADA** (linha ~605)
+	- Substituiu `time.sleep(5)` cego por loop de validação ativo
+	- Aguarda até 20 segundos para validar login bem-sucedido
+	- A cada iteração (a cada ~1s), chama `_is_user_logged_in()` para verificar estado
+	- Se `False`: levanta Exception com diagnóstico claro ("Credenciais inválidas", "Página mudou", etc.)
+	- Se `True`: sai do loop e continua (login confirmado)
+	- Se `None`: continua tentando (estado ambíguo, aguarda mais)
+	- Se timeout (20s): levanta Exception com diagnóstico ("Não foi possível confirmar login")
+
+**Impacto esperado:**
+- ✅ Login agora é verificado ANTES de ir para página de acesso
+- ✅ Se login falhar, scraper falha fast com erro claro (não silencioso)
+- ✅ Se login suceder, scraper tem usuário autenticado ao buscar PDFs
+- ✅ Deve aparecer cards JORNAL na listagem (não apenas publicações legais)
+- ✅ Detecção H5 exata para JORNAL agora fará sentido (haverá JORNAIs na página)
+
+## Exemplo pronto para uso - Próximas sessões
 
 ```text
 Continuar exatamente do ponto anterior no projeto Clipagem Digital.
 
 Objetivo desta retomada:
-- Corrigir o trigger manual da aplicacao Streamlit para acionar o workflow diario sem status Skipped.
+- Validar que login agora funciona corretamente e aparece cards JORNAL na listagem
+- Se necessário, debugar problema de PDF trigger ou refinar seletores
 
-Estado atual conhecido:
-- O botao da app envia dispatch para daily_run.yml com ref main.
-- No GitHub Actions, o run abre e termina como Skipped em poucos segundos.
-- Preciso conseguir testar fim a fim pelo botao da app.
+Estado atual conhecido (último commit f3dd909 incluiu validação de login):
+- Função _is_user_logged_in() implementada com 4 estratégias de validação
+- perform_login() agora faz loop ativo de validação (20s timeout) em vez de sleep(5)
+- Se login falhar, levanta erro claro imediatamente
+- Próximo run deve mostrar cards JORNAL (não só publicações legais)
 
-Tarefas:
-1. Revisar o .github/workflows/daily_run.yml e identificar condicoes de skip.
+Tarefas se houver falha no próximo run:
+1. Verificar artifact listagem_cards_summary.txt no GitHub Actions
+	- Se `title=JORNAL has_pdf=True` aparece: login OK, problema é em outro lugar
+	- Se `title=VALVI, EDITAL...` (sem JORNAL): login ainda falha, debugar _is_user_logged_in
+2. Se login falhar novamente:
+	- Ler screenshot login_failed_after_click.png ou login_timeout_validation.png
+	- Verificar se site mudou estrutura HTML
+	- Possível: adicionar mais indicadores em _is_user_logged_in() ou revisar credenciais
+3. Se login OK mas ainda zero PDFs encontrados:
+	- H5 detection está OK, problema é XPath para PDF trigger
+	- Rever last artifact card_jornal.html e pdf_icon_context.html
+	- Pode ser que PDF button tenha outra estrutura (vai necessário outro inspect no Chrome)
+```
 2. Corrigir o workflow com o menor diff possivel.
 3. Validar sintaxe e orientar teste de workflow_dispatch.
 4. Reportar resultado e qualquer dependencia de permissao/token.

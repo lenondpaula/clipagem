@@ -483,9 +483,97 @@ def find_clickable_element_with_fallback_any_frame(driver, selectors, timeout=LO
 
 
 def perform_login(driver):
+    def _is_user_logged_in(driver):
+        """
+        Valida se o usuário está realmente logado verificando elementos que só existem quando autenticado.
+        Retorna True se logado, False se não logado, levanta Exception se não conseguir determinar.
+        """
+        try:
+            driver.switch_to.default_content()
+        except Exception:
+            pass
+
+        # Estratégia 1: Procurar por elementos que indicam "usuário logado"
+        # Exemplos comuns: nome do usuário, botão "Sair", menu de perfil, etc.
+        logged_in_indicators = [
+            "//button[contains(text(), 'Sair')]",
+            "//button[contains(text(), 'Logout')]",
+            "//a[contains(@href, 'logout')]",
+            "//a[contains(@href, '/assinante/logout')]",
+            "//*[contains(text(), 'Bem-vindo')] | //*[contains(text(), 'welcome')]",
+            "//div[contains(@class, 'user-profile')]",
+            "//div[contains(@class, 'logged-in')]",
+            "//span[contains(@class, 'username')]",
+        ]
+
+        for indicator_selector in logged_in_indicators:
+            try:
+                elements = driver.find_elements(By.XPATH, indicator_selector)
+                if elements:
+                    print(f"[LOGIN] ✓ Indicador de login encontrado: {indicator_selector.split('[')[0]}")
+                    return True
+            except Exception:
+                continue
+
+        # Estratégia 2: Procurar por mensagens de ERRO de login
+        # Se o login falhou, haverá mensagem de erro na página
+        error_indicators = [
+            "//div[contains(@class, 'error') or contains(@class, 'alert-error')][contains(text(), 'E-mail') or contains(text(), 'Senha') or contains(text(), 'inválid')]",
+            "//span[contains(@class, 'error') or contains(@class, 'text-danger')][contains(text(), 'inválid') or contains(text(), 'incorreto') or contains(text(), 'falhou')]",
+            "//*[self::div or self::span or self::p][contains(text(), 'E-mail')][contains(text(), 'Senha') or contains(text(), 'inválid') or contains(text(), 'incorreto')]",
+            "//div[contains(., 'Efetue login')]",
+        ]
+
+        for error_selector in error_indicators:
+            try:
+                elements = driver.find_elements(By.XPATH, error_selector)
+                if elements and elements[0].is_displayed():
+                    error_text = (elements[0].text or "").strip()
+                    print(f"[LOGIN] ✗ Erro de login detectado: {error_text}")
+                    return False
+            except Exception:
+                continue
+
+        # Estratégia 3: Procurar por campo de login ainda visível
+        # Se ainda houver campo de email/senha visível, login falhou
+        login_form_indicators = [
+            "//input[@type='email'] | //input[@type='text'][contains(@placeholder, 'E-mail')]",
+            "//input[@type='password'] | //input[@type='text'][contains(@placeholder, 'Senha')]",
+            "//label[contains(text(), 'Entre com seu E-mail')]",
+        ]
+
+        visible_form_fields = 0
+        for form_selector in login_form_indicators:
+            try:
+                elements = driver.find_elements(By.XPATH, form_selector)
+                for elem in elements:
+                    if elem.is_displayed():
+                        visible_form_fields += 1
+                        break
+            except Exception:
+                continue
+
+        if visible_form_fields >= 2:
+            print(f"[LOGIN] ✗ Formulário de login ainda visível ({visible_form_fields} campos) - login falhou")
+            return False
+
+        # Estratégia 4: Verificar URL
+        # Se ainda está em /login ou /assinante/login, não logou
+        current_url = driver.current_url.lower()
+        if '/login' in current_url and '/assinante/login' in current_url:
+            print(f"[LOGIN] ✗ Ainda em página de login: {current_url}")
+            return False
+
+        # Se conseguiu passar por tudo mas não achou indicadores de login, é ambíguo
+        print(f"[LOGIN] ⚠ Incerto: Não encontrou indicadores de login nem erros. URL: {driver.current_url}")
+        return None  # Ambíguo
+
+
+    def perform_login(driver):
     """
     Realiza login na plataforma do diário oficial com seletores robustos.
     Usa múltiplas estratégias para encontrar campos mesmo com IDs dinâmicos.
+        DIFERENÇA CRÍTICA: Aguarda validação ativa de login bem-sucedido, não apenas 5s.
     """
     print(f"[LOGIN] Navegando para {DIARIO_LOGIN_URL}...")
     _write_stage_marker("login:start", DIARIO_LOGIN_URL)
@@ -697,13 +785,46 @@ def perform_login(driver):
         print(f"[LOGIN] Botão clicado. Aguardando redirecionamento...")
         _write_stage_marker("login:submitted", driver.current_url)
         
-        # Aguardar login ser completado
-        time.sleep(5)
+        # ==================== VALIDAÇÃO CRÍTICA: AGUARDAR LOGIN BEM-SUCEDIDO ====================
+        # Não apenas sleep(5) cego! Validar ATIVAMENTE que o login funcionou.
+        login_validation_deadline = time.monotonic() + 20  # 20 segundos para validar login
+        login_validated = False
+        attempts = 0
+
+        while time.monotonic() < login_validation_deadline:
+            attempts += 1
+            _human_pause(0.8, 1.5)  # Aguardar um pouco antes de verificar
+            
+            validation_result = _is_user_logged_in(driver)
+            
+            if validation_result is True:
+                print(f"[LOGIN] ✓ Login validado com sucesso (tentativa {attempts})")
+                login_validated = True
+                break
+            elif validation_result is False:
+                print(f"[LOGIN] ✗ Login falhou: formulário de login ou erro detectado")
+                _save_page_debug(driver, "login_failed_after_click")
+                raise Exception(
+                    "Login falhou após clicar em Entrar: formulário de login ou mensagem de erro detectada. "
+                    "Credenciais podem estar inválidas ou página pode ter mudado."
+                )
+            else:  # validation_result is None (ambíguo)
+                print(f"[LOGIN] ⚠ Aguardando confirmação de login (tentativa {attempts})...")
+                continue
+
+        if not login_validated:
+            print(f"[LOGIN] ✗ Timeout: login não validado após {attempts} tentativas")
+            _save_page_debug(driver, "login_timeout_validation")
+            raise TimeoutError(
+                f"Não foi possível validar login após {login_validation_deadline}s. "
+                "Verifique credenciais ou se o site mudou."
+            )
+
         try:
             driver.switch_to.default_content()
         except Exception:
             pass
-        print(f"[LOGIN] Login realizado com sucesso. URL atual: {driver.current_url}")
+        print(f"[LOGIN] ✓ Login realizado e validado com sucesso. URL: {driver.current_url}")
         _write_stage_marker("login:completed", driver.current_url)
         
     except Exception as e:
