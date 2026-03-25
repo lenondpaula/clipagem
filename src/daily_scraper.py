@@ -946,6 +946,79 @@ def perform_login(driver):
                 and "v-btn--disabled" not in state.get("classes", "")
                 and bool(state.get("is_enabled"))
             )
+
+        def _log_field_lengths(stage_label):
+            try:
+                user_len = len((_get_input_value(username_field) or "").strip())
+            except Exception:
+                user_len = -1
+            try:
+                pass_len = len((_get_input_value(password_field) or "").strip())
+            except Exception:
+                pass_len = -1
+            print(f"[LOGIN] {stage_label}: user_len={user_len}, pass_len={pass_len}")
+            return user_len, pass_len
+
+        def _reacquire_login_fields_and_button():
+            nonlocal username_field, password_field, login_button
+
+            username_field = find_element_with_fallback_any_frame(
+                driver,
+                username_selectors,
+                reserve_login_budget("relocalizar campo de usuário", LOGIN_FIELD_TIMEOUT),
+            )
+            if not username_field:
+                raise Exception("Campo de usuário não encontrado durante recuperação pré-submit")
+
+            password_field = find_element_with_fallback_any_frame(
+                driver,
+                password_selectors,
+                reserve_login_budget("relocalizar campo de senha", LOGIN_FIELD_TIMEOUT),
+            )
+            if not password_field:
+                raise Exception("Campo de senha não encontrado durante recuperação pré-submit")
+
+            login_button = find_clickable_element_with_fallback_any_frame(
+                driver,
+                button_selectors,
+                reserve_login_budget("relocalizar botão Entrar", LOGIN_BUTTON_TIMEOUT),
+            )
+            if not login_button:
+                raise Exception("Botão Entrar não encontrado durante recuperação pré-submit")
+
+        def _prepare_submit_attempt(label):
+            _reacquire_login_fields_and_button()
+            _log_field_lengths(f"{label} pre-submit (antes de revalidar)")
+
+            user_current = (_get_input_value(username_field) or "").strip()
+            pass_current = (_get_input_value(password_field) or "").strip()
+
+            if not user_current:
+                print(f"[LOGIN] {label}: usuário vazio/resetado, reaplicando valor")
+                _human_scroll_into_view(driver, username_field)
+                username_field.clear()
+                _human_pause(0.1, 0.25)
+                username_field.send_keys(DIARIO_USER)
+                _human_pause(0.15, 0.35)
+
+            if not pass_current:
+                print(f"[LOGIN] {label}: senha vazia/resetada, reaplicando valor")
+                _human_scroll_into_view(driver, password_field)
+                password_field.clear()
+                _human_pause(0.1, 0.25)
+                password_field.send_keys(DIARIO_PASSWORD)
+                _human_pause(0.15, 0.35)
+
+            if not _ensure_field_value(username_field, DIARIO_USER, "usuário"):
+                raise Exception(f"{label}: falha ao revalidar campo de usuário antes do submit")
+            if not _ensure_field_value(password_field, DIARIO_PASSWORD, "senha", mask=True):
+                raise Exception(f"{label}: falha ao revalidar campo de senha antes do submit")
+
+            _dispatch_reactive_events(username_field)
+            _human_pause(0.1, 0.25)
+            _dispatch_reactive_events(password_field)
+            _human_pause(0.15, 0.35)
+            _log_field_lengths(f"{label} pre-submit (depois de revalidar)")
         
         # ==================== BOTÃO DE ENTRAR ====================
         print("[LOGIN] Procurando botão de Entrar...")
@@ -1027,9 +1100,11 @@ def perform_login(driver):
 
         # Tentativa 1: clique humanizado no botão Entrar (fluxo principal)
         if not login_validated and not saw_explicit_error:
+            _prepare_submit_attempt("tentativa_1_click_humanizado")
             _human_click(driver, login_button, label="botão Entrar")
             print(f"[LOGIN] Botão clicado (ActionChains). Aguardando redirecionamento...")
             _write_stage_marker("login:submitted_click", driver.current_url)
+            _log_field_lengths("tentativa_1_click_humanizado pos-submit")
             _human_pause(1.5, 2.2)
             login_error_text = _detect_visible_login_error()
             if login_error_text:
@@ -1043,10 +1118,12 @@ def perform_login(driver):
         # Tentativa 2: submit via ENTER no campo de senha
         if not login_validated and not saw_explicit_error:
             try:
+                _prepare_submit_attempt("tentativa_2_enter")
                 _human_scroll_into_view(driver, password_field)
                 password_field.send_keys(Keys.ENTER)
                 print("[LOGIN] Submit via ENTER no campo senha")
                 _write_stage_marker("login:submitted_enter", driver.current_url)
+                _log_field_lengths("tentativa_2_enter pos-submit")
                 login_error_text = _detect_visible_login_error()
                 if login_error_text:
                     print(f"[LOGIN] Mensagem visível após ENTER: {login_error_text}")
@@ -1061,10 +1138,12 @@ def perform_login(driver):
         # Tentativa 3: click nativo do Selenium
         if not login_validated and not saw_explicit_error:
             try:
+                _prepare_submit_attempt("tentativa_3_native_click")
                 _human_scroll_into_view(driver, login_button)
                 login_button.click()
                 print("[LOGIN] Submit via login_button.click()")
                 _write_stage_marker("login:submitted_native_click", driver.current_url)
+                _log_field_lengths("tentativa_3_native_click pos-submit")
                 _human_pause(1.2, 1.9)
                 login_error_text = _detect_visible_login_error()
                 if login_error_text:
@@ -1080,9 +1159,11 @@ def perform_login(driver):
         # Tentativa 4: click por JavaScript
         if not login_validated and not saw_explicit_error:
             try:
+                _prepare_submit_attempt("tentativa_4_js_click")
                 driver.execute_script("arguments[0].click();", login_button)
                 print("[LOGIN] Submit via JS click")
                 _write_stage_marker("login:submitted_js_click", driver.current_url)
+                _log_field_lengths("tentativa_4_js_click pos-submit")
                 _human_pause(1.2, 1.9)
                 login_error_text = _detect_visible_login_error()
                 if login_error_text:
@@ -1098,11 +1179,17 @@ def perform_login(driver):
         # Tentativa 5: submit de formulário via JavaScript (quando existir)
         if not login_validated and not saw_explicit_error:
             try:
+                _prepare_submit_attempt("tentativa_5_form_submit")
                 submitted = driver.execute_script(
                     """
                     const btn = arguments[0];
                     const form = btn.closest('form') || document.querySelector('form');
                     if (!form) return false;
+                    const userInput = form.querySelector("input[type='email'], input[name*='email' i], input[name*='user' i], input[id*='email' i], input[id*='user' i], input[type='text']");
+                    const passInput = form.querySelector("input[type='password'], input[name*='pass' i], input[name*='senha' i], input[id*='pass' i], input[id*='senha' i]");
+                    const userVal = userInput ? (userInput.value || '').trim() : '';
+                    const passVal = passInput ? (passInput.value || '').trim() : '';
+                    if (!userVal || !passVal) return false;
                     if (typeof form.requestSubmit === 'function') {
                         form.requestSubmit();
                     } else {
@@ -1115,6 +1202,7 @@ def perform_login(driver):
                 if submitted:
                     print("[LOGIN] Submit via form.requestSubmit()/form.submit()")
                     _write_stage_marker("login:submitted_form", driver.current_url)
+                    _log_field_lengths("tentativa_5_form_submit pos-submit")
                     _human_pause(1.2, 1.9)
                     login_error_text = _detect_visible_login_error()
                     if login_error_text:
@@ -1124,6 +1212,8 @@ def perform_login(driver):
                     saw_explicit_error = saw_explicit_error or explicit_error
                     if result is True:
                         login_validated = True
+                else:
+                    print("[LOGIN] Form submit não executado: form ausente ou campos do form vazios")
             except Exception as e:
                 print(f"[LOGIN] Aviso: form submit falhou: {e}")
 
