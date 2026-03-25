@@ -767,14 +767,6 @@ def perform_login(driver):
         _human_pause(0.25, 0.7)
         print(f"[LOGIN] Senha preenchida")
 
-        if not _ensure_field_value(username_field, DIARIO_USER, "usuário"):
-            _save_page_debug(driver, "login_username_value_mismatch")
-            raise Exception("Campo de usuário não manteve o valor esperado antes do submit")
-
-        if not _ensure_field_value(password_field, DIARIO_PASSWORD, "senha", mask=True):
-            _save_page_debug(driver, "login_password_value_mismatch")
-            raise Exception("Campo de senha não manteve o valor esperado antes do submit")
-
         def _dispatch_reactive_events(target):
             """Dispara eventos para frameworks reativos (ex.: Vuetify) validarem o formulário."""
             try:
@@ -915,6 +907,14 @@ def perform_login(driver):
                 except Exception:
                     continue
             return False
+
+        if not _ensure_field_value(username_field, DIARIO_USER, "usuário"):
+            _save_page_debug(driver, "login_username_value_mismatch")
+            raise Exception("Campo de usuário não manteve o valor esperado antes do submit")
+
+        if not _ensure_field_value(password_field, DIARIO_PASSWORD, "senha", mask=True):
+            _save_page_debug(driver, "login_password_value_mismatch")
+            raise Exception("Campo de senha não manteve o valor esperado antes do submit")
 
         def _button_state_snapshot(button):
             try:
