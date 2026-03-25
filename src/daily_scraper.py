@@ -39,7 +39,7 @@ else:
 DATA_FOLDER = os.path.join(os.path.dirname(__file__), "..", "data")
 DOWNLOAD_TIMEOUT = 30
 LOGIN_TIMEOUT = 15
-LOGIN_TOTAL_TIMEOUT = int(os.getenv("LOGIN_TOTAL_TIMEOUT", "24"))
+LOGIN_TOTAL_TIMEOUT = int(os.getenv("LOGIN_TOTAL_TIMEOUT", "45"))
 LOGIN_FIELD_TIMEOUT = int(os.getenv("LOGIN_FIELD_TIMEOUT", "8"))
 LOGIN_BUTTON_TIMEOUT = int(os.getenv("LOGIN_BUTTON_TIMEOUT", "6"))
 PDF_WAIT_TIMEOUT = 20
@@ -1105,18 +1105,71 @@ def perform_login(driver):
             _log_field_lengths(f"{label} pre-submit (depois de revalidar)")
             return user_ok and pass_ok
 
-        def _wait_validation_with_budget(preferred_seconds, label):
+        def _is_field_interactable(field):
+            if not _safe_element_ref(field):
+                return False
+            try:
+                if not field.is_displayed() or not field.is_enabled():
+                    return False
+                disabled_attr = (field.get_attribute("disabled") or "").strip().lower()
+                readonly_attr = (field.get_attribute("readonly") or "").strip().lower()
+                aria_disabled = (field.get_attribute("aria-disabled") or "").strip().lower()
+                return (
+                    disabled_attr in ("", "false", "0")
+                    and readonly_attr not in ("true", "readonly")
+                    and aria_disabled not in ("true", "1")
+                )
+            except Exception:
+                return False
+
+        def _is_form_locked_for_processing():
+            user_ok = _is_field_interactable(username_field)
+            pass_ok = _is_field_interactable(password_field)
+            btn_ok = _safe_element_ref(login_button) and _is_login_button_enabled(login_button)
+            return not (user_ok and pass_ok and btn_ok)
+
+        def _wait_submit_outcome(label, preferred_seconds):
             remaining_total = login_deadline - time.monotonic()
             if remaining_total <= 0.5:
                 print(f"[LOGIN] Sem orçamento para validação pós-{label} (restante {remaining_total:.1f}s)")
-                return None, False
+                return "timeout", False
 
-            effective_timeout = min(preferred_seconds, max(1.5, remaining_total - 1.0))
+            effective_timeout = min(preferred_seconds, max(2.0, remaining_total - 1.0))
             print(
                 f"[LOGIN] Janela de validação pós-{label}: {effective_timeout:.1f}s "
                 f"(restante total {remaining_total:.1f}s)"
             )
-            return _wait_login_validation(driver, timeout_seconds=effective_timeout, label=label)
+
+            deadline = time.monotonic() + effective_timeout
+            saw_locked = False
+            unlocked_polls = 0
+
+            while time.monotonic() < deadline:
+                validation_result = _is_user_logged_in(driver)
+                if validation_result is True:
+                    return "success", False
+                if validation_result is False:
+                    return "error", True
+
+                visible_error = _detect_visible_login_error()
+                if visible_error:
+                    print(f"[LOGIN] Mensagem visível após {label}: {visible_error}")
+                    return "error", True
+
+                locked = _is_form_locked_for_processing()
+                if locked:
+                    saw_locked = True
+                    unlocked_polls = 0
+                    print(f"[LOGIN] {label}: formulário bloqueado/processando, aguardando...")
+                else:
+                    unlocked_polls += 1
+                    if saw_locked and unlocked_polls >= 2:
+                        print(f"[LOGIN] {label}: formulário voltou a ficar interagível")
+                        return "ready_retry", False
+
+                _human_pause(0.6, 0.95)
+
+            return "timeout", False
         
         # ==================== BOTÃO DE ENTRAR ====================
         print("[LOGIN] Procurando botão de Entrar...")
@@ -1196,158 +1249,37 @@ def perform_login(driver):
         saw_explicit_error = False
         login_validated = False
 
-        # Tentativa 1: clique humanizado no botão Entrar (fluxo principal)
+        # Fluxo simplificado: um submit principal + um retry JS apenas se o formulário destravar.
         if not login_validated and not saw_explicit_error:
             try:
                 _prepare_submit_attempt("tentativa_1_click_humanizado")
                 if _safe_element_ref(login_button):
                     _human_click(driver, login_button, label="botão Entrar")
-                    print(f"[LOGIN] Botão clicado (ActionChains). Aguardando redirecionamento...")
+                    print("[LOGIN] Submit principal realizado (ActionChains)")
                     _write_stage_marker("login:submitted_click", driver.current_url)
                     _log_field_lengths("tentativa_1_click_humanizado pos-submit")
-                    _human_pause(0.8, 1.3)
-                    login_error_text = _detect_visible_login_error()
-                    if login_error_text:
-                        print(f"[LOGIN] Mensagem visível após ActionChains click: {login_error_text}")
-                    result, explicit_error = _wait_validation_with_budget(4.5, "ActionChains click")
-                    explicit_error = explicit_error or bool(login_error_text)
+
+                    outcome, explicit_error = _wait_submit_outcome("ActionChains click", preferred_seconds=14.0)
                     saw_explicit_error = saw_explicit_error or explicit_error
-                    if result is True:
+                    if outcome == "success":
                         login_validated = True
+                    elif outcome == "ready_retry" and not saw_explicit_error:
+                        print("[LOGIN] Formulário desbloqueou sem sucesso; executando retry único via JS click")
+                        _prepare_submit_attempt("tentativa_2_js_click_fallback")
+                        if _safe_element_ref(login_button):
+                            driver.execute_script("arguments[0].click();", login_button)
+                            _write_stage_marker("login:submitted_js_click", driver.current_url)
+                            _log_field_lengths("tentativa_2_js_click_fallback pos-submit")
+                            retry_outcome, retry_explicit_error = _wait_submit_outcome("JS click fallback", preferred_seconds=10.0)
+                            saw_explicit_error = saw_explicit_error or retry_explicit_error
+                            if retry_outcome == "success":
+                                login_validated = True
+                        else:
+                            print("[LOGIN] Retry JS ignorado: botão indisponível")
                 else:
-                    print("[LOGIN] Aviso: botão indisponível na tentativa ActionChains")
+                    print("[LOGIN] Botão indisponível antes do submit principal")
             except Exception as e:
-                print(f"[LOGIN] Aviso: tentativa ActionChains falhou: {e}")
-
-        # Tentativa 2: submit via ENTER no campo de senha
-        if not login_validated and not saw_explicit_error:
-            try:
-                _prepare_submit_attempt("tentativa_2_enter")
-                if _safe_element_ref(password_field):
-                    _human_scroll_into_view(driver, password_field)
-                    password_field.send_keys(Keys.ENTER)
-                    print("[LOGIN] Submit via ENTER no campo senha")
-                    _write_stage_marker("login:submitted_enter", driver.current_url)
-                    _log_field_lengths("tentativa_2_enter pos-submit")
-                    login_error_text = _detect_visible_login_error()
-                    if login_error_text:
-                        print(f"[LOGIN] Mensagem visível após ENTER: {login_error_text}")
-                    result, explicit_error = _wait_validation_with_budget(4.0, "ENTER")
-                    explicit_error = explicit_error or bool(login_error_text)
-                    saw_explicit_error = saw_explicit_error or explicit_error
-                    if result is True:
-                        login_validated = True
-                else:
-                    print("[LOGIN] Aviso: campo senha indisponível para tentativa ENTER")
-            except Exception as e:
-                print(f"[LOGIN] Aviso: submit ENTER falhou: {e}")
-
-        # Tentativa 3: click nativo do Selenium
-        if not login_validated and not saw_explicit_error:
-            try:
-                _prepare_submit_attempt("tentativa_3_native_click")
-                if _safe_element_ref(login_button):
-                    _human_scroll_into_view(driver, login_button)
-                    login_button.click()
-                    print("[LOGIN] Submit via login_button.click()")
-                    _write_stage_marker("login:submitted_native_click", driver.current_url)
-                    _log_field_lengths("tentativa_3_native_click pos-submit")
-                    _human_pause(0.8, 1.2)
-                    login_error_text = _detect_visible_login_error()
-                    if login_error_text:
-                        print(f"[LOGIN] Mensagem visível após native click: {login_error_text}")
-                    result, explicit_error = _wait_validation_with_budget(3.5, "native click")
-                    explicit_error = explicit_error or bool(login_error_text)
-                    saw_explicit_error = saw_explicit_error or explicit_error
-                    if result is True:
-                        login_validated = True
-                else:
-                    print("[LOGIN] Aviso: botão indisponível para native click")
-            except Exception as e:
-                print(f"[LOGIN] Aviso: native click falhou: {e}")
-
-        # Tentativa 4: click por JavaScript
-        if not login_validated and not saw_explicit_error:
-            try:
-                _prepare_submit_attempt("tentativa_4_js_click")
-                if _safe_element_ref(login_button):
-                    driver.execute_script("arguments[0].click();", login_button)
-                    print("[LOGIN] Submit via JS click")
-                    _write_stage_marker("login:submitted_js_click", driver.current_url)
-                    _log_field_lengths("tentativa_4_js_click pos-submit")
-                    _human_pause(0.8, 1.2)
-                    login_error_text = _detect_visible_login_error()
-                    if login_error_text:
-                        print(f"[LOGIN] Mensagem visível após JS click: {login_error_text}")
-                    result, explicit_error = _wait_validation_with_budget(3.5, "JS click")
-                    explicit_error = explicit_error or bool(login_error_text)
-                    saw_explicit_error = saw_explicit_error or explicit_error
-                    if result is True:
-                        login_validated = True
-                else:
-                    print("[LOGIN] Aviso: botão indisponível para JS click")
-            except Exception as e:
-                print(f"[LOGIN] Aviso: JS click falhou: {e}")
-
-        # Tentativa 5: submit de formulário via JavaScript (quando existir)
-        if not login_validated and not saw_explicit_error:
-            try:
-                _prepare_submit_attempt("tentativa_5_form_submit")
-                submitted = driver.execute_script(
-                    """
-                    const btn = arguments[0];
-                    const form = btn.closest('form') || document.querySelector('form');
-                    if (!form) return false;
-                    const isVisibleEditable = (el) => {
-                        if (!el) return false;
-                        const style = window.getComputedStyle(el);
-                        if (!style || style.display === 'none' || style.visibility === 'hidden') return false;
-                        if (el.disabled || el.readOnly) return false;
-                        if ((el.type || '').toLowerCase() === 'hidden') return false;
-                        const rect = el.getBoundingClientRect();
-                        return rect.width > 0 && rect.height > 0;
-                    };
-
-                    const allCandidates = Array.from(form.querySelectorAll('input'));
-                    const visibleCandidates = allCandidates.filter(isVisibleEditable);
-                    const userInput = visibleCandidates.find((el) => {
-                        const hay = `${el.type || ''} ${el.name || ''} ${el.id || ''} ${el.placeholder || ''}`.toLowerCase();
-                        return hay.includes('email') || hay.includes('e-mail') || hay.includes('user') || hay.includes('cpf');
-                    }) || visibleCandidates.find((el) => (el.type || '').toLowerCase() === 'text' || (el.type || '').toLowerCase() === 'email');
-                    const passInput = visibleCandidates.find((el) => {
-                        const hay = `${el.type || ''} ${el.name || ''} ${el.id || ''} ${el.placeholder || ''}`.toLowerCase();
-                        return hay.includes('password') || hay.includes('senha') || (el.type || '').toLowerCase() === 'password';
-                    });
-
-                    const userVal = userInput ? (userInput.value || '').trim() : '';
-                    const passVal = passInput ? (passInput.value || '').trim() : '';
-                    if (!userVal || !passVal) return false;
-                    if (typeof form.requestSubmit === 'function') {
-                        form.requestSubmit();
-                    } else {
-                        form.submit();
-                    }
-                    return true;
-                    """,
-                    login_button,
-                )
-                if submitted:
-                    print("[LOGIN] Submit via form.requestSubmit()/form.submit()")
-                    _write_stage_marker("login:submitted_form", driver.current_url)
-                    _log_field_lengths("tentativa_5_form_submit pos-submit")
-                    _human_pause(0.8, 1.2)
-                    login_error_text = _detect_visible_login_error()
-                    if login_error_text:
-                        print(f"[LOGIN] Mensagem visível após form submit: {login_error_text}")
-                    result, explicit_error = _wait_validation_with_budget(3.5, "form submit")
-                    explicit_error = explicit_error or bool(login_error_text)
-                    saw_explicit_error = saw_explicit_error or explicit_error
-                    if result is True:
-                        login_validated = True
-                else:
-                    print("[LOGIN] Form submit não executado: form ausente ou campos do form vazios")
-            except Exception as e:
-                print(f"[LOGIN] Aviso: form submit falhou: {e}")
+                print(f"[LOGIN] Aviso: fluxo de submit simplificado falhou: {e}")
 
         if not login_validated:
             try:
