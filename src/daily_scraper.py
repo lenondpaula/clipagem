@@ -482,91 +482,90 @@ def find_clickable_element_with_fallback_any_frame(driver, selectors, timeout=LO
     return None
 
 
-def perform_login(driver):
-    def _is_user_logged_in(driver):
-        """
-        Valida se o usuário está realmente logado verificando elementos que só existem quando autenticado.
-        Retorna True se logado, False se não logado, levanta Exception se não conseguir determinar.
-        """
+def _is_user_logged_in(driver):
+    """
+    Valida se o usuário está realmente logado verificando elementos que só existem quando autenticado.
+    Retorna True se logado, False se não logado, levanta Exception se não conseguir determinar.
+    """
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        pass
+
+    # Estratégia 1: Procurar por elementos que indicam "usuário logado"
+    # Exemplos comuns: nome do usuário, botão "Sair", menu de perfil, etc.
+    logged_in_indicators = [
+        "//button[contains(text(), 'Sair')]",
+        "//button[contains(text(), 'Logout')]",
+        "//a[contains(@href, 'logout')]",
+        "//a[contains(@href, '/assinante/logout')]",
+        "//*[contains(text(), 'Bem-vindo')] | //*[contains(text(), 'welcome')]",
+        "//div[contains(@class, 'user-profile')]",
+        "//div[contains(@class, 'logged-in')]",
+        "//span[contains(@class, 'username')]",
+    ]
+
+    for indicator_selector in logged_in_indicators:
         try:
-            driver.switch_to.default_content()
+            elements = driver.find_elements(By.XPATH, indicator_selector)
+            if elements:
+                print(f"[LOGIN] ✓ Indicador de login encontrado: {indicator_selector.split('[')[0]}")
+                return True
         except Exception:
-            pass
+            continue
 
-        # Estratégia 1: Procurar por elementos que indicam "usuário logado"
-        # Exemplos comuns: nome do usuário, botão "Sair", menu de perfil, etc.
-        logged_in_indicators = [
-            "//button[contains(text(), 'Sair')]",
-            "//button[contains(text(), 'Logout')]",
-            "//a[contains(@href, 'logout')]",
-            "//a[contains(@href, '/assinante/logout')]",
-            "//*[contains(text(), 'Bem-vindo')] | //*[contains(text(), 'welcome')]",
-            "//div[contains(@class, 'user-profile')]",
-            "//div[contains(@class, 'logged-in')]",
-            "//span[contains(@class, 'username')]",
-        ]
+    # Estratégia 2: Procurar por mensagens de ERRO de login
+    # Se o login falhou, haverá mensagem de erro na página
+    error_indicators = [
+        "//div[contains(@class, 'error') or contains(@class, 'alert-error')][contains(text(), 'E-mail') or contains(text(), 'Senha') or contains(text(), 'inválid')]",
+        "//span[contains(@class, 'error') or contains(@class, 'text-danger')][contains(text(), 'inválid') or contains(text(), 'incorreto') or contains(text(), 'falhou')]",
+        "//*[self::div or self::span or self::p][contains(text(), 'E-mail')][contains(text(), 'Senha') or contains(text(), 'inválid') or contains(text(), 'incorreto')]",
+        "//div[contains(., 'Efetue login')]",
+    ]
 
-        for indicator_selector in logged_in_indicators:
-            try:
-                elements = driver.find_elements(By.XPATH, indicator_selector)
-                if elements:
-                    print(f"[LOGIN] ✓ Indicador de login encontrado: {indicator_selector.split('[')[0]}")
-                    return True
-            except Exception:
-                continue
+    for error_selector in error_indicators:
+        try:
+            elements = driver.find_elements(By.XPATH, error_selector)
+            if elements and elements[0].is_displayed():
+                error_text = (elements[0].text or "").strip()
+                print(f"[LOGIN] ✗ Erro de login detectado: {error_text}")
+                return False
+        except Exception:
+            continue
 
-        # Estratégia 2: Procurar por mensagens de ERRO de login
-        # Se o login falhou, haverá mensagem de erro na página
-        error_indicators = [
-            "//div[contains(@class, 'error') or contains(@class, 'alert-error')][contains(text(), 'E-mail') or contains(text(), 'Senha') or contains(text(), 'inválid')]",
-            "//span[contains(@class, 'error') or contains(@class, 'text-danger')][contains(text(), 'inválid') or contains(text(), 'incorreto') or contains(text(), 'falhou')]",
-            "//*[self::div or self::span or self::p][contains(text(), 'E-mail')][contains(text(), 'Senha') or contains(text(), 'inválid') or contains(text(), 'incorreto')]",
-            "//div[contains(., 'Efetue login')]",
-        ]
+    # Estratégia 3: Procurar por campo de login ainda visível
+    # Se ainda houver campo de email/senha visível, login falhou
+    login_form_indicators = [
+        "//input[@type='email'] | //input[@type='text'][contains(@placeholder, 'E-mail')]",
+        "//input[@type='password'] | //input[@type='text'][contains(@placeholder, 'Senha')]",
+        "//label[contains(text(), 'Entre com seu E-mail')]",
+    ]
 
-        for error_selector in error_indicators:
-            try:
-                elements = driver.find_elements(By.XPATH, error_selector)
-                if elements and elements[0].is_displayed():
-                    error_text = (elements[0].text or "").strip()
-                    print(f"[LOGIN] ✗ Erro de login detectado: {error_text}")
-                    return False
-            except Exception:
-                continue
+    visible_form_fields = 0
+    for form_selector in login_form_indicators:
+        try:
+            elements = driver.find_elements(By.XPATH, form_selector)
+            for elem in elements:
+                if elem.is_displayed():
+                    visible_form_fields += 1
+                    break
+        except Exception:
+            continue
 
-        # Estratégia 3: Procurar por campo de login ainda visível
-        # Se ainda houver campo de email/senha visível, login falhou
-        login_form_indicators = [
-            "//input[@type='email'] | //input[@type='text'][contains(@placeholder, 'E-mail')]",
-            "//input[@type='password'] | //input[@type='text'][contains(@placeholder, 'Senha')]",
-            "//label[contains(text(), 'Entre com seu E-mail')]",
-        ]
+    if visible_form_fields >= 2:
+        print(f"[LOGIN] ✗ Formulário de login ainda visível ({visible_form_fields} campos) - login falhou")
+        return False
 
-        visible_form_fields = 0
-        for form_selector in login_form_indicators:
-            try:
-                elements = driver.find_elements(By.XPATH, form_selector)
-                for elem in elements:
-                    if elem.is_displayed():
-                        visible_form_fields += 1
-                        break
-            except Exception:
-                continue
+    # Estratégia 4: Verificar URL
+    # Se ainda está em /login ou /assinante/login, não logou
+    current_url = driver.current_url.lower()
+    if '/login' in current_url and '/assinante/login' in current_url:
+        print(f"[LOGIN] ✗ Ainda em página de login: {current_url}")
+        return False
 
-        if visible_form_fields >= 2:
-            print(f"[LOGIN] ✗ Formulário de login ainda visível ({visible_form_fields} campos) - login falhou")
-            return False
-
-        # Estratégia 4: Verificar URL
-        # Se ainda está em /login ou /assinante/login, não logou
-        current_url = driver.current_url.lower()
-        if '/login' in current_url and '/assinante/login' in current_url:
-            print(f"[LOGIN] ✗ Ainda em página de login: {current_url}")
-            return False
-
-        # Se conseguiu passar por tudo mas não achou indicadores de login, é ambíguo
-        print(f"[LOGIN] ⚠ Incerto: Não encontrou indicadores de login nem erros. URL: {driver.current_url}")
-        return None  # Ambíguo
+    # Se conseguiu passar por tudo mas não achou indicadores de login, é ambíguo
+    print(f"[LOGIN] ⚠ Incerto: Não encontrou indicadores de login nem erros. URL: {driver.current_url}")
+    return None  # Ambíguo
 
 
 def perform_login(driver):
