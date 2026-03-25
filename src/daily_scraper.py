@@ -851,14 +851,12 @@ def perform_login(driver):
                 "//*[contains(@class, 'toast') and normalize-space()]",
                 "//*[contains(@role, 'alert') and normalize-space()]",
                 "//*[contains(@aria-live, 'assertive') and normalize-space()]",
-                "//small[normalize-space()]",
-                "//div[normalize-space()]",
-                "//span[normalize-space()]",
-                "//p[normalize-space()]",
+                "//*[contains(@class, 'invalid') and normalize-space()]",
+                "//*[contains(@class, 'danger') and normalize-space()]",
             ]
             keywords = (
                 "obrigat", "inválid", "inval", "incorret", "não confere", "nao confere",
-                "senha", "usu", "e-mail", "email", "erro", "captcha", "bloque", "tentativa"
+                "erro", "captcha", "bloque", "tentativa", "falhou", "acesso negado"
             )
 
             snippets = []
@@ -875,6 +873,10 @@ def perform_login(driver):
                         if not text:
                             continue
                         lowered = text.lower()
+                        if len(lowered) > 260:
+                            continue
+                        if "já possuo cadastro" in lowered:
+                            continue
                         if any(k in lowered for k in keywords):
                             snippets.append(text[:220])
                             if len(snippets) >= 3:
@@ -1023,24 +1025,7 @@ def perform_login(driver):
         saw_explicit_error = False
         login_validated = False
 
-        # Tentativa 1: submit via ENTER no campo de senha (mais próximo do comportamento humano)
-        try:
-            _human_scroll_into_view(driver, password_field)
-            password_field.send_keys(Keys.ENTER)
-            print("[LOGIN] Submit via ENTER no campo senha")
-            _write_stage_marker("login:submitted_enter", driver.current_url)
-            login_error_text = _detect_visible_login_error()
-            if login_error_text:
-                print(f"[LOGIN] Mensagem visível após ENTER: {login_error_text}")
-            result, explicit_error = _wait_login_validation(driver, timeout_seconds=7, label="ENTER")
-            explicit_error = explicit_error or bool(login_error_text)
-            saw_explicit_error = saw_explicit_error or explicit_error
-            if result is True:
-                login_validated = True
-        except Exception as e:
-            print(f"[LOGIN] Aviso: submit ENTER falhou: {e}")
-
-        # Tentativa 2: clique humanizado atual
+        # Tentativa 1: clique humanizado no botão Entrar (fluxo principal)
         if not login_validated and not saw_explicit_error:
             _human_click(driver, login_button, label="botão Entrar")
             print(f"[LOGIN] Botão clicado (ActionChains). Aguardando redirecionamento...")
@@ -1054,6 +1039,24 @@ def perform_login(driver):
             saw_explicit_error = saw_explicit_error or explicit_error
             if result is True:
                 login_validated = True
+
+        # Tentativa 2: submit via ENTER no campo de senha
+        if not login_validated and not saw_explicit_error:
+            try:
+                _human_scroll_into_view(driver, password_field)
+                password_field.send_keys(Keys.ENTER)
+                print("[LOGIN] Submit via ENTER no campo senha")
+                _write_stage_marker("login:submitted_enter", driver.current_url)
+                login_error_text = _detect_visible_login_error()
+                if login_error_text:
+                    print(f"[LOGIN] Mensagem visível após ENTER: {login_error_text}")
+                result, explicit_error = _wait_login_validation(driver, timeout_seconds=7, label="ENTER")
+                explicit_error = explicit_error or bool(login_error_text)
+                saw_explicit_error = saw_explicit_error or explicit_error
+                if result is True:
+                    login_validated = True
+            except Exception as e:
+                print(f"[LOGIN] Aviso: submit ENTER falhou: {e}")
 
         # Tentativa 3: click nativo do Selenium
         if not login_validated and not saw_explicit_error:
