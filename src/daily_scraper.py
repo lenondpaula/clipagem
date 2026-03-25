@@ -569,11 +569,11 @@ def perform_login(driver):
         return None  # Ambíguo
 
 
-    def perform_login(driver):
+def perform_login(driver):
     """
     Realiza login na plataforma do diário oficial com seletores robustos.
     Usa múltiplas estratégias para encontrar campos mesmo com IDs dinâmicos.
-        DIFERENÇA CRÍTICA: Aguarda validação ativa de login bem-sucedido, não apenas 5s.
+    DIFERENÇA CRÍTICA: Aguarda validação ativa de login bem-sucedido, não apenas 5s.
     """
     print(f"[LOGIN] Navegando para {DIARIO_LOGIN_URL}...")
     _write_stage_marker("login:start", DIARIO_LOGIN_URL)
