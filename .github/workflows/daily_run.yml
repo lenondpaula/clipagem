@@ -1,8 +1,6 @@
 name: Daily Clipagem Run
 
 on:
-  schedule:
-    - cron: '0 9 * * *'  # 09:00 UTC = 06:00 BRT (Brasilia)
   workflow_dispatch:
 
 permissions:
@@ -10,6 +8,7 @@ permissions:
 
 jobs:
   clipagem-automation:
+    if: ${{ false }} # Workflow pausado temporariamente
     runs-on: ubuntu-latest
     env:
       PYTHONUNBUFFERED: "1"
