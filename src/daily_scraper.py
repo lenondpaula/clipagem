@@ -767,6 +767,14 @@ def perform_login(driver):
         _human_pause(0.25, 0.7)
         print(f"[LOGIN] Senha preenchida")
 
+        if not _ensure_field_value(username_field, DIARIO_USER, "usuário"):
+            _save_page_debug(driver, "login_username_value_mismatch")
+            raise Exception("Campo de usuário não manteve o valor esperado antes do submit")
+
+        if not _ensure_field_value(password_field, DIARIO_PASSWORD, "senha", mask=True):
+            _save_page_debug(driver, "login_password_value_mismatch")
+            raise Exception("Campo de senha não manteve o valor esperado antes do submit")
+
         def _dispatch_reactive_events(target):
             """Dispara eventos para frameworks reativos (ex.: Vuetify) validarem o formulário."""
             try:
@@ -781,6 +789,132 @@ def perform_login(driver):
                 )
             except Exception as e:
                 print(f"[LOGIN] Aviso: falha ao disparar eventos reativos: {e}")
+
+        def _get_input_value(target):
+            try:
+                return driver.execute_script("return arguments[0].value || '';", target) or ""
+            except Exception:
+                try:
+                    return target.get_attribute("value") or ""
+                except Exception:
+                    return ""
+
+        def _set_input_value_js(target, value):
+            try:
+                driver.execute_script(
+                    """
+                    const el = arguments[0];
+                    const val = arguments[1];
+                    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                    if (setter) {
+                        setter.call(el, val);
+                    } else {
+                        el.value = val;
+                    }
+                    ['input', 'change', 'blur'].forEach((evtName) => {
+                        el.dispatchEvent(new Event(evtName, { bubbles: true }));
+                    });
+                    """,
+                    target,
+                    value,
+                )
+                return True
+            except Exception as e:
+                print(f"[LOGIN] Aviso: falha ao setar valor via JS: {e}")
+                return False
+
+        def _ensure_field_value(field, expected_value, field_name, mask=False):
+            actual = (_get_input_value(field) or "").strip()
+            if actual == expected_value:
+                shown = f"len={len(actual)}" if mask else (actual[:3] + "***" if actual else "")
+                print(f"[LOGIN] Valor confirmado em {field_name}: {shown}")
+                return True
+
+            print(
+                f"[LOGIN] Aviso: valor de {field_name} diferente do esperado após send_keys "
+                f"(len_atual={len(actual)} len_esperado={len(expected_value)}). Tentando fallback JS..."
+            )
+            if not _set_input_value_js(field, expected_value):
+                return False
+
+            actual_after_js = (_get_input_value(field) or "").strip()
+            if actual_after_js == expected_value:
+                shown = f"len={len(actual_after_js)}" if mask else (actual_after_js[:3] + "***" if actual_after_js else "")
+                print(f"[LOGIN] Valor confirmado em {field_name} após fallback JS: {shown}")
+                return True
+
+            print(
+                f"[LOGIN] ERRO: não foi possível confirmar valor em {field_name} "
+                f"(len_final={len(actual_after_js)} len_esperado={len(expected_value)})"
+            )
+            return False
+
+        def _detect_visible_login_error():
+            """Busca mensagens visíveis de erro para distinguir falha de autenticação de timeout de navegação."""
+            error_selectors = [
+                "//*[contains(@class, 'error') and normalize-space()]",
+                "//*[contains(@class, 'alert') and normalize-space()]",
+                "//*[contains(@class, 'message') and normalize-space()]",
+                "//*[contains(@class, 'snackbar') and normalize-space()]",
+                "//*[contains(@class, 'toast') and normalize-space()]",
+                "//*[contains(@role, 'alert') and normalize-space()]",
+                "//*[contains(@aria-live, 'assertive') and normalize-space()]",
+                "//small[normalize-space()]",
+                "//div[normalize-space()]",
+                "//span[normalize-space()]",
+                "//p[normalize-space()]",
+            ]
+            keywords = (
+                "obrigat", "inválid", "inval", "incorret", "não confere", "nao confere",
+                "senha", "usu", "e-mail", "email", "erro", "captcha", "bloque", "tentativa"
+            )
+
+            snippets = []
+            for selector in error_selectors:
+                try:
+                    elements = driver.find_elements(By.XPATH, selector)
+                except Exception:
+                    continue
+                for element in elements:
+                    try:
+                        if not element.is_displayed():
+                            continue
+                        text = (element.text or "").strip()
+                        if not text:
+                            continue
+                        lowered = text.lower()
+                        if any(k in lowered for k in keywords):
+                            snippets.append(text[:220])
+                            if len(snippets) >= 3:
+                                break
+                    except Exception:
+                        continue
+                if len(snippets) >= 3:
+                    break
+
+            if snippets:
+                dedup = []
+                for msg in snippets:
+                    if msg not in dedup:
+                        dedup.append(msg)
+                return " | ".join(dedup)
+            return None
+
+        def _has_logged_area_markers():
+            markers = [
+                "//*[contains(., 'Public. Legal')]",
+                "//*[contains(., 'Data Edição') or contains(., 'Data Edicao')]",
+                "//h5[contains(translate(., 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'), 'JORNAL')]",
+                "//button[contains(., 'PDF')]",
+            ]
+            for selector in markers:
+                try:
+                    matches = driver.find_elements(By.XPATH, selector)
+                    if any(m.is_displayed() for m in matches):
+                        return True
+                except Exception:
+                    continue
+            return False
 
         def _button_state_snapshot(button):
             try:
@@ -895,7 +1029,11 @@ def perform_login(driver):
             password_field.send_keys(Keys.ENTER)
             print("[LOGIN] Submit via ENTER no campo senha")
             _write_stage_marker("login:submitted_enter", driver.current_url)
+            login_error_text = _detect_visible_login_error()
+            if login_error_text:
+                print(f"[LOGIN] Mensagem visível após ENTER: {login_error_text}")
             result, explicit_error = _wait_login_validation(driver, timeout_seconds=7, label="ENTER")
+            explicit_error = explicit_error or bool(login_error_text)
             saw_explicit_error = saw_explicit_error or explicit_error
             if result is True:
                 login_validated = True
@@ -908,7 +1046,11 @@ def perform_login(driver):
             print(f"[LOGIN] Botão clicado (ActionChains). Aguardando redirecionamento...")
             _write_stage_marker("login:submitted_click", driver.current_url)
             _human_pause(1.5, 2.2)
+            login_error_text = _detect_visible_login_error()
+            if login_error_text:
+                print(f"[LOGIN] Mensagem visível após ActionChains click: {login_error_text}")
             result, explicit_error = _wait_login_validation(driver, timeout_seconds=7, label="ActionChains click")
+            explicit_error = explicit_error or bool(login_error_text)
             saw_explicit_error = saw_explicit_error or explicit_error
             if result is True:
                 login_validated = True
@@ -921,7 +1063,11 @@ def perform_login(driver):
                 print("[LOGIN] Submit via login_button.click()")
                 _write_stage_marker("login:submitted_native_click", driver.current_url)
                 _human_pause(1.2, 1.9)
+                login_error_text = _detect_visible_login_error()
+                if login_error_text:
+                    print(f"[LOGIN] Mensagem visível após native click: {login_error_text}")
                 result, explicit_error = _wait_login_validation(driver, timeout_seconds=6, label="native click")
+                explicit_error = explicit_error or bool(login_error_text)
                 saw_explicit_error = saw_explicit_error or explicit_error
                 if result is True:
                     login_validated = True
@@ -935,7 +1081,11 @@ def perform_login(driver):
                 print("[LOGIN] Submit via JS click")
                 _write_stage_marker("login:submitted_js_click", driver.current_url)
                 _human_pause(1.2, 1.9)
+                login_error_text = _detect_visible_login_error()
+                if login_error_text:
+                    print(f"[LOGIN] Mensagem visível após JS click: {login_error_text}")
                 result, explicit_error = _wait_login_validation(driver, timeout_seconds=6, label="JS click")
+                explicit_error = explicit_error or bool(login_error_text)
                 saw_explicit_error = saw_explicit_error or explicit_error
                 if result is True:
                     login_validated = True
@@ -963,12 +1113,24 @@ def perform_login(driver):
                     print("[LOGIN] Submit via form.requestSubmit()/form.submit()")
                     _write_stage_marker("login:submitted_form", driver.current_url)
                     _human_pause(1.2, 1.9)
+                    login_error_text = _detect_visible_login_error()
+                    if login_error_text:
+                        print(f"[LOGIN] Mensagem visível após form submit: {login_error_text}")
                     result, explicit_error = _wait_login_validation(driver, timeout_seconds=6, label="form submit")
+                    explicit_error = explicit_error or bool(login_error_text)
                     saw_explicit_error = saw_explicit_error or explicit_error
                     if result is True:
                         login_validated = True
             except Exception as e:
                 print(f"[LOGIN] Aviso: form submit falhou: {e}")
+
+        if not login_validated:
+            try:
+                if _has_logged_area_markers():
+                    print("[LOGIN] ✓ Marcadores de área logada detectados mesmo sem mudança clara de URL")
+                    login_validated = True
+            except Exception:
+                pass
 
         if not login_validated:
             print("[LOGIN] ✗ Login não validado após todas as estratégias de submit")
