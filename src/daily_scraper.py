@@ -625,6 +625,69 @@ def perform_login(driver):
                 f"(restante total {remaining_total:.1f}s)"
             )
             return wait_timeout
+
+        def _is_visible_editable_input(field):
+            if not field:
+                return False
+            try:
+                field_type = (field.get_attribute("type") or "").strip().lower()
+                if field_type == "hidden":
+                    return False
+                if not field.is_displayed() or not field.is_enabled():
+                    return False
+                readonly_attr = (field.get_attribute("readonly") or "").strip().lower()
+                aria_hidden = (field.get_attribute("aria-hidden") or "").strip().lower()
+                return readonly_attr not in ("true", "readonly") and aria_hidden not in ("true", "1")
+            except Exception:
+                return False
+
+        def _find_visible_editable_field_any_frame(selectors, timeout, field_name):
+            deadline = time.monotonic() + timeout
+
+            try:
+                driver.switch_to.default_content()
+            except Exception:
+                pass
+
+            while time.monotonic() < deadline:
+                for selector in selectors:
+                    try:
+                        for candidate in driver.find_elements(By.XPATH, selector):
+                            if _is_visible_editable_input(candidate):
+                                return candidate
+                    except Exception:
+                        continue
+
+                try:
+                    frames = driver.find_elements(By.TAG_NAME, "iframe")
+                except Exception:
+                    frames = []
+
+                for idx, frame in enumerate(frames):
+                    if time.monotonic() >= deadline:
+                        break
+                    try:
+                        driver.switch_to.default_content()
+                        driver.switch_to.frame(frame)
+                    except Exception:
+                        continue
+
+                    for selector in selectors:
+                        try:
+                            for candidate in driver.find_elements(By.XPATH, selector):
+                                if _is_visible_editable_input(candidate):
+                                    print(f"[LOGIN] {field_name} encontrado em iframe {idx}")
+                                    return candidate
+                        except Exception:
+                            continue
+
+                _human_pause(0.15, 0.25)
+
+            try:
+                driver.switch_to.default_content()
+            except Exception:
+                pass
+            return None
         
         # ==================== CAMPO DE USUÁRIO ====================
         print("[LOGIN] Procurando campo de E-mail/Usuário...")
@@ -632,7 +695,7 @@ def perform_login(driver):
         # Seletores para campo de usuário (em ordem de preferência)
         username_selectors = [
             # Markup Vuetify atual do site
-            "//label[contains(., 'Entre com seu E-mail ou CPF/CNPJ')]/following::input[contains(@class, 'v-field__input')][1]",
+            "//label[contains(., 'Entre com seu E-mail ou CPF/CNPJ')]/ancestor::div[contains(@class, 'v-field')][1]//input[contains(@class, 'v-field__input') and not(@type='hidden')]",
             "//input[contains(@class, 'v-field__input') and @type='text' and @maxlength='100']",
             "//input[@type='text' and contains(@aria-labelledby, '-label') and @maxlength='100']",
 
@@ -673,16 +736,12 @@ def perform_login(driver):
             "//input[@aria-label='E-mail']",
             "//input[@aria-label='Email']",
             "//input[@aria-label='Usuário']",
-            
-            # Fallback - primeiro input type=text
-            "//input[@type='text'][1]",
-            "//input[1]",
         ]
         
-        username_field = find_element_with_fallback_any_frame(
-            driver,
+        username_field = _find_visible_editable_field_any_frame(
             username_selectors,
             reserve_login_budget("campo de usuário", LOGIN_FIELD_TIMEOUT),
+            "campo de usuário",
         )
         
         if not username_field:
@@ -708,7 +767,7 @@ def perform_login(driver):
         # Seletores para campo de senha (em ordem de preferência)
         password_selectors = [
             # Markup Vuetify atual do site
-            "//label[contains(., 'Senha')]/following::input[contains(@class, 'v-field__input') and @type='password'][1]",
+            "//label[contains(., 'Senha')]/ancestor::div[contains(@class, 'v-field')][1]//input[contains(@class, 'v-field__input') and (@type='password' or @type='text') and not(@type='hidden')]",
             "//input[contains(@class, 'v-field__input') and @type='password' and @maxlength='20']",
             "//input[@type='password' and contains(@aria-labelledby, '-label') and @maxlength='20']",
 
@@ -740,16 +799,12 @@ def perform_login(driver):
             # Por aria-label
             "//input[@aria-label='Senha']",
             "//input[@aria-label='Password']",
-            
-            # Fallback - segundo input (se primeiro era email)
-            "//input[@type='text'][2]",
-            "//input[2]",
         ]
         
-        password_field = find_element_with_fallback_any_frame(
-            driver,
+        password_field = _find_visible_editable_field_any_frame(
             password_selectors,
             reserve_login_budget("campo de senha", LOGIN_FIELD_TIMEOUT),
+            "campo de senha",
         )
         
         if not password_field:
@@ -982,27 +1037,27 @@ def perform_login(driver):
 
             short_timeout = _reacquire_timeout_budget()
 
-            recovered_username = find_element_with_fallback_any_frame(
-                driver,
+            recovered_username = _find_visible_editable_field_any_frame(
                 username_selectors,
                 short_timeout,
+                "campo de usuário",
             )
             if recovered_username:
                 username_field = recovered_username
             else:
                 print(f"[LOGIN] {label}: aviso ao relocalizar usuário, mantendo referência atual")
 
-            recovered_password = find_element_with_fallback_any_frame(
-                driver,
+            recovered_password = _find_visible_editable_field_any_frame(
                 password_selectors,
                 short_timeout,
+                "campo de senha",
             )
             if recovered_password:
                 password_field = recovered_password
             else:
                 print(f"[LOGIN] {label}: aviso ao relocalizar senha, mantendo referência atual")
 
-            recovered_button = find_clickable_element_with_fallback_any_frame(
+            recovered_button = find_element_with_fallback_any_frame(
                 driver,
                 button_selectors,
                 short_timeout,
@@ -1243,8 +1298,27 @@ def perform_login(driver):
                     const btn = arguments[0];
                     const form = btn.closest('form') || document.querySelector('form');
                     if (!form) return false;
-                    const userInput = form.querySelector("input[type='email'], input[name*='email' i], input[name*='user' i], input[id*='email' i], input[id*='user' i], input[type='text']");
-                    const passInput = form.querySelector("input[type='password'], input[name*='pass' i], input[name*='senha' i], input[id*='pass' i], input[id*='senha' i]");
+                    const isVisibleEditable = (el) => {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        if (!style || style.display === 'none' || style.visibility === 'hidden') return false;
+                        if (el.disabled || el.readOnly) return false;
+                        if ((el.type || '').toLowerCase() === 'hidden') return false;
+                        const rect = el.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0;
+                    };
+
+                    const allCandidates = Array.from(form.querySelectorAll('input'));
+                    const visibleCandidates = allCandidates.filter(isVisibleEditable);
+                    const userInput = visibleCandidates.find((el) => {
+                        const hay = `${el.type || ''} ${el.name || ''} ${el.id || ''} ${el.placeholder || ''}`.toLowerCase();
+                        return hay.includes('email') || hay.includes('e-mail') || hay.includes('user') || hay.includes('cpf');
+                    }) || visibleCandidates.find((el) => (el.type || '').toLowerCase() === 'text' || (el.type || '').toLowerCase() === 'email');
+                    const passInput = visibleCandidates.find((el) => {
+                        const hay = `${el.type || ''} ${el.name || ''} ${el.id || ''} ${el.placeholder || ''}`.toLowerCase();
+                        return hay.includes('password') || hay.includes('senha') || (el.type || '').toLowerCase() === 'password';
+                    });
+
                     const userVal = userInput ? (userInput.value || '').trim() : '';
                     const passVal = passInput ? (passInput.value || '').trim() : '';
                     if (!userVal || !passVal) return false;
