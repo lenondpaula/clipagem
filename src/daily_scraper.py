@@ -572,6 +572,30 @@ def _is_user_logged_in(driver):
     return None  # Ambíguo
 
 
+def _wait_login_validation(driver, timeout_seconds=8, label="submit"):
+    """Valida login por uma janela curta após uma tentativa de submit."""
+    deadline = time.monotonic() + timeout_seconds
+    attempts = 0
+    saw_explicit_error = False
+
+    while time.monotonic() < deadline:
+        attempts += 1
+        _human_pause(0.5, 0.9)
+        validation_result = _is_user_logged_in(driver)
+
+        if validation_result is True:
+            print(f"[LOGIN] ✓ Login validado após {label} (tentativa {attempts})")
+            return True, saw_explicit_error
+        if validation_result is False:
+            saw_explicit_error = True
+            print(f"[LOGIN] ✗ Erro explícito de login após {label}")
+            return False, saw_explicit_error
+
+        print(f"[LOGIN] ⚠ Aguardando confirmação de login após {label} (tentativa {attempts})...")
+
+    return None, saw_explicit_error
+
+
 def perform_login(driver):
     """
     Realiza login na plataforma do diário oficial com seletores robustos.
@@ -784,50 +808,103 @@ def perform_login(driver):
         
         print(f"[LOGIN] Botão 'Entrar' encontrado")
         _write_stage_marker("login:button_found")
-        _human_click(driver, login_button, label="botão Entrar")
-        print(f"[LOGIN] Botão clicado. Aguardando redirecionamento...")
-        _write_stage_marker("login:submitted", driver.current_url)
 
-        # Aguardo inicial para submit efetivar e backend responder.
-        _human_pause(2.5, 3.5)
-        
-        # ==================== VALIDAÇÃO CRÍTICA: AGUARDAR LOGIN BEM-SUCEDIDO ====================
-        # Não apenas sleep(5) cego! Validar ATIVAMENTE que o login funcionou.
-        login_validation_deadline = time.monotonic() + 28  # janela maior para CI/latência
-        login_validated = False
-        attempts = 0
         saw_explicit_error = False
+        login_validated = False
 
-        while time.monotonic() < login_validation_deadline:
-            attempts += 1
-            _human_pause(0.8, 1.5)  # Aguardar um pouco antes de verificar
-            
-            validation_result = _is_user_logged_in(driver)
-            
-            if validation_result is True:
-                print(f"[LOGIN] ✓ Login validado com sucesso (tentativa {attempts})")
+        # Tentativa 1: submit via ENTER no campo de senha (mais próximo do comportamento humano)
+        try:
+            _human_scroll_into_view(driver, password_field)
+            password_field.send_keys(Keys.ENTER)
+            print("[LOGIN] Submit via ENTER no campo senha")
+            _write_stage_marker("login:submitted_enter", driver.current_url)
+            result, explicit_error = _wait_login_validation(driver, timeout_seconds=7, label="ENTER")
+            saw_explicit_error = saw_explicit_error or explicit_error
+            if result is True:
                 login_validated = True
-                break
-            elif validation_result is False:
-                saw_explicit_error = True
-                print(f"[LOGIN] ✗ Erro explícito de login detectado")
-                _save_page_debug(driver, "login_failed_after_click")
-                break
-            else:  # validation_result is None (ambíguo)
-                print(f"[LOGIN] ⚠ Aguardando confirmação de login (tentativa {attempts})...")
-                continue
+        except Exception as e:
+            print(f"[LOGIN] Aviso: submit ENTER falhou: {e}")
+
+        # Tentativa 2: clique humanizado atual
+        if not login_validated and not saw_explicit_error:
+            _human_click(driver, login_button, label="botão Entrar")
+            print(f"[LOGIN] Botão clicado (ActionChains). Aguardando redirecionamento...")
+            _write_stage_marker("login:submitted_click", driver.current_url)
+            _human_pause(1.5, 2.2)
+            result, explicit_error = _wait_login_validation(driver, timeout_seconds=7, label="ActionChains click")
+            saw_explicit_error = saw_explicit_error or explicit_error
+            if result is True:
+                login_validated = True
+
+        # Tentativa 3: click nativo do Selenium
+        if not login_validated and not saw_explicit_error:
+            try:
+                _human_scroll_into_view(driver, login_button)
+                login_button.click()
+                print("[LOGIN] Submit via login_button.click()")
+                _write_stage_marker("login:submitted_native_click", driver.current_url)
+                _human_pause(1.2, 1.9)
+                result, explicit_error = _wait_login_validation(driver, timeout_seconds=6, label="native click")
+                saw_explicit_error = saw_explicit_error or explicit_error
+                if result is True:
+                    login_validated = True
+            except Exception as e:
+                print(f"[LOGIN] Aviso: native click falhou: {e}")
+
+        # Tentativa 4: click por JavaScript
+        if not login_validated and not saw_explicit_error:
+            try:
+                driver.execute_script("arguments[0].click();", login_button)
+                print("[LOGIN] Submit via JS click")
+                _write_stage_marker("login:submitted_js_click", driver.current_url)
+                _human_pause(1.2, 1.9)
+                result, explicit_error = _wait_login_validation(driver, timeout_seconds=6, label="JS click")
+                saw_explicit_error = saw_explicit_error or explicit_error
+                if result is True:
+                    login_validated = True
+            except Exception as e:
+                print(f"[LOGIN] Aviso: JS click falhou: {e}")
+
+        # Tentativa 5: submit de formulário via JavaScript (quando existir)
+        if not login_validated and not saw_explicit_error:
+            try:
+                submitted = driver.execute_script(
+                    """
+                    const btn = arguments[0];
+                    const form = btn.closest('form') || document.querySelector('form');
+                    if (!form) return false;
+                    if (typeof form.requestSubmit === 'function') {
+                        form.requestSubmit();
+                    } else {
+                        form.submit();
+                    }
+                    return true;
+                    """,
+                    login_button,
+                )
+                if submitted:
+                    print("[LOGIN] Submit via form.requestSubmit()/form.submit()")
+                    _write_stage_marker("login:submitted_form", driver.current_url)
+                    _human_pause(1.2, 1.9)
+                    result, explicit_error = _wait_login_validation(driver, timeout_seconds=6, label="form submit")
+                    saw_explicit_error = saw_explicit_error or explicit_error
+                    if result is True:
+                        login_validated = True
+            except Exception as e:
+                print(f"[LOGIN] Aviso: form submit falhou: {e}")
 
         if not login_validated:
-            print(f"[LOGIN] ✗ Timeout: login não validado após {attempts} tentativas")
+            print("[LOGIN] ✗ Login não validado após todas as estratégias de submit")
             _save_page_debug(driver, "login_timeout_validation")
             if saw_explicit_error:
+                _save_page_debug(driver, "login_failed_after_click")
                 raise Exception(
-                    "Login falhou após clicar em Entrar: mensagem de erro explícita detectada. "
+                    "Login falhou após múltiplas tentativas de submit: mensagem de erro explícita detectada. "
                     "Verifique credenciais ou mudança de layout."
                 )
             raise TimeoutError(
-                "Não foi possível validar login no tempo limite após o clique. "
-                "Pode ser necessário ampliar timeout ou ajustar sinais de validação."
+                "Não foi possível validar login após múltiplas estratégias de submit. "
+                "Possível bloqueio por anti-bot ou evento de clique não disparando no CI."
             )
 
         try:
