@@ -766,6 +766,50 @@ def perform_login(driver):
         password_field.send_keys(DIARIO_PASSWORD)
         _human_pause(0.25, 0.7)
         print(f"[LOGIN] Senha preenchida")
+
+        def _dispatch_reactive_events(target):
+            """Dispara eventos para frameworks reativos (ex.: Vuetify) validarem o formulário."""
+            try:
+                driver.execute_script(
+                    """
+                    const el = arguments[0];
+                    ['input', 'change', 'blur'].forEach((evtName) => {
+                        el.dispatchEvent(new Event(evtName, { bubbles: true }));
+                    });
+                    """,
+                    target,
+                )
+            except Exception as e:
+                print(f"[LOGIN] Aviso: falha ao disparar eventos reativos: {e}")
+
+        def _button_state_snapshot(button):
+            try:
+                disabled_attr = button.get_attribute("disabled")
+                aria_disabled = button.get_attribute("aria-disabled")
+                classes = button.get_attribute("class") or ""
+                return {
+                    "disabled_attr": (disabled_attr or "").strip().lower(),
+                    "aria_disabled": (aria_disabled or "").strip().lower(),
+                    "classes": classes,
+                    "is_enabled": button.is_enabled(),
+                }
+            except Exception as e:
+                return {
+                    "disabled_attr": "",
+                    "aria_disabled": "",
+                    "classes": "",
+                    "is_enabled": False,
+                    "error": str(e),
+                }
+
+        def _is_login_button_enabled(button):
+            state = _button_state_snapshot(button)
+            return (
+                state.get("disabled_attr", "") in ("", "false", "0")
+                and state.get("aria_disabled", "") not in ("true", "1")
+                and "v-btn--disabled" not in state.get("classes", "")
+                and bool(state.get("is_enabled"))
+            )
         
         # ==================== BOTÃO DE ENTRAR ====================
         print("[LOGIN] Procurando botão de Entrar...")
@@ -808,6 +852,39 @@ def perform_login(driver):
         
         print(f"[LOGIN] Botão 'Entrar' encontrado")
         _write_stage_marker("login:button_found")
+
+        # Força validação reativa dos campos antes de qualquer tentativa de submit.
+        _dispatch_reactive_events(username_field)
+        _human_pause(0.15, 0.35)
+        _dispatch_reactive_events(password_field)
+        _human_pause(0.2, 0.5)
+
+        enable_wait_deadline = time.monotonic() + 10.0
+        login_button_enabled = _is_login_button_enabled(login_button)
+        while not login_button_enabled and time.monotonic() < enable_wait_deadline:
+            _dispatch_reactive_events(password_field)
+            _human_pause(0.15, 0.3)
+            try:
+                _human_scroll_into_view(driver, login_button)
+            except Exception:
+                pass
+            login_button_enabled = _is_login_button_enabled(login_button)
+
+        button_state = _button_state_snapshot(login_button)
+        print(
+            "[LOGIN] Estado botão antes do submit: "
+            f"disabled='{button_state.get('disabled_attr', '')}', "
+            f"aria-disabled='{button_state.get('aria_disabled', '')}', "
+            f"enabled={button_state.get('is_enabled', False)}, "
+            f"class='{button_state.get('classes', '')}'"
+        )
+
+        if not login_button_enabled:
+            _save_page_debug(driver, "login_button_still_disabled")
+            raise TimeoutError(
+                "Botão 'Entrar' permaneceu desabilitado após preenchimento e eventos reativos. "
+                "A validação de frontend não confirmou o formulário."
+            )
 
         saw_explicit_error = False
         login_validated = False
