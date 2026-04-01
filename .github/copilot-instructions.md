@@ -4,7 +4,7 @@
 
 **Clipagem Digital** é um sistema de automação de clipping do **Diário de Santa Maria**. O projeto automatiza:
 1. Download diário do PDF do jornal (via Selenium + Chrome headless)
-2. Análise de conteúdo com IA (Google Gemini 2.0 Flash)
+2. Análise de conteúdo com IA (Groq Mixtral 8x7B)
 3. Exibição em interface web (Streamlit Cloud)
 4. Commit automático dos dados gerados
 
@@ -14,16 +14,49 @@
 **Horário de Execução**: 06:15 BRT (09:00 UTC) diariamente  
 **App Streamlit**: https://clipagem-secom.streamlit.app/
 
+## Atualização de Retomada (01/04/2026)
+
+### ✅ Mudanças Recentes Publicadas
+- **Scraper endurecido para CI/CD** (commit `b23715b`):
+  - `setup_chrome_driver()` usa `--headless=new`
+  - User-Agent realista de Chrome recente
+  - `Page.setDownloadBehavior` via CDP para download em modo headless
+- **Login Vuetify simplificado e robusto**:
+  - Digitação humanizada com `ActionChains` (caractere a caractere) em usuário/senha
+  - Remoção dos fallbacks de eventos reativos redundantes
+  - Espera explícita para botão Entrar: clicável + `disabled` ausente/falso
+  - Clique principal do botão via `ActionChains.move_to_element(...).click().perform()`
+- **Download monitorado com critérios de estabilidade**:
+  - PDF só é aceito quando `size > 0`
+  - Tamanho deve permanecer estável por 2 segundos consecutivos
+  - Abort específico para `.crdownload` travado por mais de 15s (falha de tráfego de rede)
+
+### ✅ Correção de Workflow (Trigger da App)
+- **Causa raiz do "Skipped" resolvida** (commit `6548934`):
+  - Removido `if: ${{ false }}` do job principal em `.github/workflows/daily_run.yml`
+- Resultado esperado: trigger via Streamlit Cloud passa a executar o job `clipagem-automation`.
+
+### ⚠ Estado Atual dos Workflows
+- `.github/workflows/daily_run.yml`: habilitado para `workflow_dispatch`.
+- `.github/workflows/keep_alive.yml`: ainda com `if: ${{ false }}` (pausado provisoriamente).
+
+### ⚠ Alinhamento de Stack para Próxima Sessão
+- `src/analyzer.py` está em **Groq** (não Gemini).
+- `requirements.txt` atual:
+  - `webdriver-manager==4.0.1`
+  - `pymupdf==1.24.9`
+  - `requests==2.32.3`
+
 ---
 
-## Status Atual do Projeto (18/02/2026)
+## Status Atual do Projeto (01/04/2026)
 
 ### ✅ Componentes 100% Funcionais
 - **src/daily_scraper.py**: Selenium scraper com seletores robustos, iframe search, login automático
-- **src/analyzer.py**: Extração PDF (PyMuPDF) + análise Gemini 2.0 Flash
+- **src/analyzer.py**: Extração PDF (PyMuPDF) + análise Groq Mixtral 8x7B
 - **src/app.py**: Interface Streamlit com layout AgroPulse-style, cards, tabela de licitações
-- **.github/workflows/daily_run.yml**: GitHub Actions com cron, secrets loading, auto-commit
-- **.github/workflows/keep_alive.yml**: Keep alive a cada 6h (apenas Selenium)
+- **.github/workflows/daily_run.yml**: GitHub Actions via workflow_dispatch, secrets loading, auto-commit
+- **.github/workflows/keep_alive.yml**: Keep alive pausado provisoriamente
 - **keep_alive.py**: Script Selenium Chrome headless para manter app ativa
 - **data/**: Armazena `diario_sm_atual.pdf` e `clipagem_hoje.json`
 
@@ -316,6 +349,6 @@ GEMINI_API_KEY=AIzaSyA...
 
 ---
 
-**Última Atualização**: 18 de Fevereiro de 2026  
+**Última Atualização**: 01 de Abril de 2026  
 **Status**: ✅ Sistema em Produção - Funcionando 100%  
 **Próxima Revisão**: Conforme necessidade de novas features ou mudanças no site fonte
