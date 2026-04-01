@@ -296,7 +296,7 @@ def setup_chrome_driver():
         options.binary_location = chrome_binary
         print(f"[CHROME] Usando binário: {chrome_binary}")
     
-    options.add_argument("--headless")
+    options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
@@ -304,6 +304,11 @@ def setup_chrome_driver():
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-plugins")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/144.0.0.0 Safari/537.36"
+    )
     
     # Configurar pasta de download automático
     prefs = {
@@ -331,6 +336,14 @@ def setup_chrome_driver():
         print(f"[CHROME] ChromeDriver instalado: {service.path}")
         
         driver = webdriver.Chrome(service=service, options=options)
+        driver.execute_cdp_cmd(
+            "Page.setDownloadBehavior",
+            {
+                "behavior": "allow",
+                "downloadPath": os.path.abspath(DATA_FOLDER),
+            },
+        )
+        print(f"[CHROME] Download em headless habilitado via CDP: {os.path.abspath(DATA_FOLDER)}")
         print("[CHROME] ChromeDriver configurado com sucesso")
         
         return driver
@@ -688,6 +701,30 @@ def perform_login(driver):
             except Exception:
                 pass
             return None
+
+        def _type_text_with_action_chains(field, value, field_name, mask=False):
+            """Digita texto caractere a caractere para acionar eventos do frontend (Vuetify)."""
+            if not field:
+                return False
+
+            try:
+                _human_scroll_into_view(driver, field)
+                try:
+                    field.clear()
+                except Exception:
+                    pass
+
+                ActionChains(driver).move_to_element(field).click().pause(0.2).perform()
+                for char in value:
+                    ActionChains(driver).send_keys(char).perform()
+                    time.sleep(random.uniform(0.05, 0.15))
+
+                shown = f"len={len(value)}" if mask else (value[:3] + "***" if value else "")
+                print(f"[LOGIN] {field_name} preenchido via ActionChains: {shown}")
+                return True
+            except Exception as e:
+                print(f"[LOGIN] ERRO ao preencher {field_name} via ActionChains: {e}")
+                return False
         
         # ==================== CAMPO DE USUÁRIO ====================
         print("[LOGIN] Procurando campo de E-mail/Usuário...")
@@ -754,10 +791,9 @@ def perform_login(driver):
         
         print(f"[LOGIN] Campo de Usuário encontrado")
         _write_stage_marker("login:username_found")
-        _human_scroll_into_view(driver, username_field)
-        username_field.clear()
-        _human_pause(0.15, 0.4)
-        username_field.send_keys(DIARIO_USER)
+        if not _type_text_with_action_chains(username_field, DIARIO_USER, "usuário"):
+            _save_page_debug(driver, "login_username_fill_failed")
+            raise Exception("Falha ao preencher campo de usuário com ActionChains")
         _human_pause(0.25, 0.7)
         print(f"[LOGIN] Usuário preenchido: {DIARIO_USER[:3]}***")
         
@@ -815,27 +851,11 @@ def perform_login(driver):
         
         print(f"[LOGIN] Campo de Senha encontrado")
         _write_stage_marker("login:password_found")
-        _human_scroll_into_view(driver, password_field)
-        password_field.clear()
-        _human_pause(0.15, 0.4)
-        password_field.send_keys(DIARIO_PASSWORD)
+        if not _type_text_with_action_chains(password_field, DIARIO_PASSWORD, "senha", mask=True):
+            _save_page_debug(driver, "login_password_fill_failed")
+            raise Exception("Falha ao preencher campo de senha com ActionChains")
         _human_pause(0.25, 0.7)
         print(f"[LOGIN] Senha preenchida")
-
-        def _dispatch_reactive_events(target):
-            """Dispara eventos para frameworks reativos (ex.: Vuetify) validarem o formulário."""
-            try:
-                driver.execute_script(
-                    """
-                    const el = arguments[0];
-                    ['input', 'change', 'blur'].forEach((evtName) => {
-                        el.dispatchEvent(new Event(evtName, { bubbles: true }));
-                    });
-                    """,
-                    target,
-                )
-            except Exception as e:
-                print(f"[LOGIN] Aviso: falha ao disparar eventos reativos: {e}")
 
         def _get_input_value(target):
             try:
@@ -846,30 +866,6 @@ def perform_login(driver):
                 except Exception:
                     return ""
 
-        def _set_input_value_js(target, value):
-            try:
-                driver.execute_script(
-                    """
-                    const el = arguments[0];
-                    const val = arguments[1];
-                    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                    if (setter) {
-                        setter.call(el, val);
-                    } else {
-                        el.value = val;
-                    }
-                    ['input', 'change', 'blur'].forEach((evtName) => {
-                        el.dispatchEvent(new Event(evtName, { bubbles: true }));
-                    });
-                    """,
-                    target,
-                    value,
-                )
-                return True
-            except Exception as e:
-                print(f"[LOGIN] Aviso: falha ao setar valor via JS: {e}")
-                return False
-
         def _ensure_field_value(field, expected_value, field_name, mask=False):
             actual = (_get_input_value(field) or "").strip()
             if actual == expected_value:
@@ -878,21 +874,21 @@ def perform_login(driver):
                 return True
 
             print(
-                f"[LOGIN] Aviso: valor de {field_name} diferente do esperado após send_keys "
-                f"(len_atual={len(actual)} len_esperado={len(expected_value)}). Tentando fallback JS..."
+                f"[LOGIN] Aviso: valor de {field_name} diferente do esperado após digitação humanizada "
+                f"(len_atual={len(actual)} len_esperado={len(expected_value)}). Reaplicando via ActionChains..."
             )
-            if not _set_input_value_js(field, expected_value):
+            if not _type_text_with_action_chains(field, expected_value, field_name, mask=mask):
                 return False
 
-            actual_after_js = (_get_input_value(field) or "").strip()
-            if actual_after_js == expected_value:
-                shown = f"len={len(actual_after_js)}" if mask else (actual_after_js[:3] + "***" if actual_after_js else "")
-                print(f"[LOGIN] Valor confirmado em {field_name} após fallback JS: {shown}")
+            actual_after_retry = (_get_input_value(field) or "").strip()
+            if actual_after_retry == expected_value:
+                shown = f"len={len(actual_after_retry)}" if mask else (actual_after_retry[:3] + "***" if actual_after_retry else "")
+                print(f"[LOGIN] Valor confirmado em {field_name} após reaplicação com ActionChains: {shown}")
                 return True
 
             print(
                 f"[LOGIN] ERRO: não foi possível confirmar valor em {field_name} "
-                f"(len_final={len(actual_after_js)} len_esperado={len(expected_value)})"
+                f"(len_final={len(actual_after_retry)} len_esperado={len(expected_value)})"
             )
             return False
 
@@ -1002,6 +998,24 @@ def perform_login(driver):
                 and bool(state.get("is_enabled"))
             )
 
+        def _wait_login_button_clickable_and_enabled(timeout_seconds):
+            """Aguarda botão clicável e com atributo disabled ausente/falso."""
+            def _button_ready(_):
+                if not _safe_element_ref(login_button):
+                    return False
+                try:
+                    clickable = EC.element_to_be_clickable(login_button)(driver)
+                    if not clickable:
+                        return False
+                    disabled_attr = (login_button.get_attribute("disabled") or "").strip().lower()
+                    if disabled_attr in ("", "false", "0"):
+                        return login_button
+                except Exception:
+                    return False
+                return False
+
+            return WebDriverWait(driver, timeout_seconds, poll_frequency=0.2).until(_button_ready)
+
         def _log_field_lengths(stage_label):
             try:
                 user_len = len((_get_input_value(username_field) or "").strip())
@@ -1080,28 +1094,18 @@ def perform_login(driver):
 
             if not user_current:
                 print(f"[LOGIN] {label}: usuário vazio/resetado, reaplicando valor")
-                _human_scroll_into_view(driver, username_field)
-                username_field.clear()
-                _human_pause(0.1, 0.25)
-                username_field.send_keys(DIARIO_USER)
+                if not _type_text_with_action_chains(username_field, DIARIO_USER, "usuário"):
+                    return False
                 _human_pause(0.15, 0.35)
 
             if not pass_current:
                 print(f"[LOGIN] {label}: senha vazia/resetada, reaplicando valor")
-                _human_scroll_into_view(driver, password_field)
-                password_field.clear()
-                _human_pause(0.1, 0.25)
-                password_field.send_keys(DIARIO_PASSWORD)
+                if not _type_text_with_action_chains(password_field, DIARIO_PASSWORD, "senha", mask=True):
+                    return False
                 _human_pause(0.15, 0.35)
 
             user_ok = _ensure_field_value(username_field, DIARIO_USER, "usuário")
             pass_ok = _ensure_field_value(password_field, DIARIO_PASSWORD, "senha", mask=True)
-
-            if user_ok and pass_ok:
-                _dispatch_reactive_events(username_field)
-                _human_pause(0.1, 0.25)
-                _dispatch_reactive_events(password_field)
-                _human_pause(0.15, 0.35)
             _log_field_lengths(f"{label} pre-submit (depois de revalidar)")
             return user_ok and pass_ok
 
@@ -1213,21 +1217,12 @@ def perform_login(driver):
         print(f"[LOGIN] Botão 'Entrar' encontrado")
         _write_stage_marker("login:button_found")
 
-        # Força validação reativa dos campos antes de qualquer tentativa de submit.
-        _dispatch_reactive_events(username_field)
-        _human_pause(0.15, 0.35)
-        _dispatch_reactive_events(password_field)
-        _human_pause(0.2, 0.5)
-
-        enable_wait_deadline = time.monotonic() + 10.0
-        login_button_enabled = _is_login_button_enabled(login_button)
-        while not login_button_enabled and time.monotonic() < enable_wait_deadline:
-            _dispatch_reactive_events(password_field)
-            _human_pause(0.15, 0.3)
-            try:
-                _human_scroll_into_view(driver, login_button)
-            except Exception:
-                pass
+        wait_budget = max(2.0, min(10.0, login_deadline - time.monotonic()))
+        print(f"[LOGIN] Aguardando botão habilitar (disabled ausente/falso), timeout={wait_budget:.1f}s")
+        try:
+            login_button = _wait_login_button_clickable_and_enabled(wait_budget)
+            login_button_enabled = True
+        except Exception:
             login_button_enabled = _is_login_button_enabled(login_button)
 
         button_state = _button_state_snapshot(login_button)
@@ -1242,7 +1237,7 @@ def perform_login(driver):
         if not login_button_enabled:
             _save_page_debug(driver, "login_button_still_disabled")
             raise TimeoutError(
-                "Botão 'Entrar' permaneceu desabilitado após preenchimento e eventos reativos. "
+                "Botão 'Entrar' permaneceu desabilitado após preenchimento humanizado. "
                 "A validação de frontend não confirmou o formulário."
             )
 
@@ -1254,7 +1249,9 @@ def perform_login(driver):
             try:
                 _prepare_submit_attempt("tentativa_1_click_humanizado")
                 if _safe_element_ref(login_button):
-                    _human_click(driver, login_button, label="botão Entrar")
+                    wait_before_click = max(2.0, min(8.0, login_deadline - time.monotonic()))
+                    login_button = _wait_login_button_clickable_and_enabled(wait_before_click)
+                    ActionChains(driver).move_to_element(login_button).click().perform()
                     print("[LOGIN] Submit principal realizado (ActionChains)")
                     _write_stage_marker("login:submitted_click", driver.current_url)
                     _log_field_lengths("tentativa_1_click_humanizado pos-submit")
@@ -2109,22 +2106,86 @@ def wait_for_download_completion():
     """Aguarda o download ser completado monitorando a pasta data/"""
     print("[DOWNLOAD] Aguardando conclusão do download...")
     _write_stage_marker("download:waiting")
+    crdownload_stall_timeout = 15
+    stable_size_required_checks = 2
     
     start_time = time.time()
+    crdownload_seen_since = None
+    last_pdf_path = None
+    last_pdf_size = None
+    stable_size_checks = 0
+
     while time.time() - start_time < DOWNLOAD_TIMEOUT:
+        now = time.time()
         # Procurar por arquivos .crdownload (indicam download em progresso)
-        crdownload_files = glob.glob(os.path.join(DATA_FOLDER, "*.crdownload"))
+        crdownload_files = sorted(glob.glob(os.path.join(DATA_FOLDER, "*.crdownload")))
         # Procurar por arquivos .pdf
-        pdf_files = glob.glob(os.path.join(DATA_FOLDER, "*.pdf"))
+        pdf_files = sorted(glob.glob(os.path.join(DATA_FOLDER, "*.pdf")))
         
         if crdownload_files:
-            print(f"[DOWNLOAD] Arquivo em download: {crdownload_files[0]}")
+            if crdownload_seen_since is None:
+                crdownload_seen_since = now
+            stalled_for = now - crdownload_seen_since
+            print(
+                f"[DOWNLOAD] Arquivo em download: {crdownload_files[0]} "
+                f"(tempo em progresso: {stalled_for:.1f}s)"
+            )
+
+            if stalled_for > crdownload_stall_timeout:
+                stalled_file = crdownload_files[0]
+                _write_stage_marker(
+                    "download:crdownload_stalled",
+                    f"{stalled_file} | {stalled_for:.1f}s",
+                )
+                raise Exception(
+                    "Falha no tráfego de rede: arquivo .crdownload travado "
+                    "por mais de 15 segundos"
+                )
             time.sleep(1)
             continue
+
+        crdownload_seen_since = None
         
         if pdf_files:
-            downloaded_file = pdf_files[0]
-            print(f"[DOWNLOAD] PDF detectado: {downloaded_file}")
+            downloaded_file = max(pdf_files, key=lambda path: os.path.getmtime(path))
+            if downloaded_file != last_pdf_path:
+                last_pdf_path = downloaded_file
+                last_pdf_size = None
+                stable_size_checks = 0
+                print(f"[DOWNLOAD] PDF detectado: {downloaded_file}")
+
+            try:
+                current_size = os.path.getsize(downloaded_file)
+            except OSError as e:
+                print(f"[DOWNLOAD] Erro ao ler tamanho de {downloaded_file}: {e}")
+                time.sleep(1)
+                continue
+
+            if current_size <= 0:
+                stable_size_checks = 0
+                last_pdf_size = current_size
+                print("[DOWNLOAD] PDF com tamanho 0 bytes, aguardando escrita...")
+                time.sleep(1)
+                continue
+
+            if last_pdf_size == current_size:
+                stable_size_checks += 1
+            else:
+                stable_size_checks = 0
+            last_pdf_size = current_size
+
+            if stable_size_checks < stable_size_required_checks:
+                print(
+                    f"[DOWNLOAD] PDF ainda em escrita (tamanho={current_size} bytes, "
+                    f"estável por {stable_size_checks}s)"
+                )
+                time.sleep(1)
+                continue
+
+            print(
+                f"[DOWNLOAD] PDF estabilizado por 2s (tamanho final={current_size} bytes): "
+                f"{downloaded_file}"
+            )
             
             # Validação do arquivo baixado
             if validate_downloaded_file(downloaded_file):
