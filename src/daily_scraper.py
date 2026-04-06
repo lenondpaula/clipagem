@@ -2375,15 +2375,17 @@ def _find_first_visible_locator(page, selectors, timeout_seconds, label):
 def _snapshot_login_form_state_playwright(page):
     """Captura estado resumido do formulário de login para diagnosticar lock persistente."""
     snapshot = {
-        "has_recaptcha_script": False,
+        "has_visible_recaptcha_widget": False,
         "disabled_inputs": 0,
         "total_inputs": 0,
         "button_disabled": False,
     }
 
     try:
-        recaptcha_scripts = page.locator("xpath=//script[contains(@src, 'recaptcha')]")
-        snapshot["has_recaptcha_script"] = recaptcha_scripts.count() > 0
+        recaptcha_widgets = page.locator(
+            "xpath=//iframe[contains(@src, 'recaptcha')] | //div[contains(@class, 'g-recaptcha')] | //textarea[@name='g-recaptcha-response']"
+        )
+        snapshot["has_visible_recaptcha_widget"] = recaptcha_widgets.count() > 0
     except Exception:
         pass
 
@@ -2458,9 +2460,9 @@ def _wait_login_success_playwright(page, timeout_seconds):
         if lock_detected:
             lock_streak += 1
             if lock_streak >= 5:
-                if lock_snapshot.get("has_recaptcha_script"):
+                if lock_snapshot.get("has_visible_recaptcha_widget"):
                     return "recaptcha_blocked", (
-                        "form_locked_with_recaptcha_script"
+                        "form_locked_with_visible_recaptcha_widget"
                         f" (disabled_inputs={lock_snapshot.get('disabled_inputs', 0)})"
                     )
                 return "form_locked", (
@@ -2541,7 +2543,7 @@ def perform_login_playwright(page):
         _write_stage_marker("login:recaptcha_blocked", fatal_error or "")
         _save_page_debug_playwright(page, "login_recaptcha_blocked")
         raise Exception(
-            "Login bloqueado após submit: estado de bloqueio persistente com indício de recaptcha/script de desafio"
+            "Login bloqueado após submit: widget de captcha visível manteve o formulário travado"
             + (f" ({fatal_error})" if fatal_error else "")
         )
 
