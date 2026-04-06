@@ -2544,6 +2544,14 @@ def _summarize_endpoint_flow(events, endpoint_fragment):
             statuses.append(status)
 
     completion_event = None
+    first_request_ms = None
+    last_event_ms = None
+
+    for item in events:
+        event_ms = item.get("epoch_ms")
+        if isinstance(event_ms, int):
+            last_event_ms = event_ms
+
     if requests:
         first_request_ms = requests[0].get("epoch_ms")
         for item in events:
@@ -2567,6 +2575,11 @@ def _summarize_endpoint_flow(events, endpoint_fragment):
         if isinstance(req_ms, int) and isinstance(comp_ms, int) and comp_ms >= req_ms:
             elapsed_ms = comp_ms - req_ms
 
+    pending_for_ms = None
+    if len(requests) > 0 and completion_event is None and isinstance(first_request_ms, int) and isinstance(last_event_ms, int):
+        if last_event_ms >= first_request_ms:
+            pending_for_ms = last_event_ms - first_request_ms
+
     return {
         "requests": len(requests),
         "responses": len(responses),
@@ -2578,6 +2591,7 @@ def _summarize_endpoint_flow(events, endpoint_fragment):
         "completion_event": completion_event.get("event") if completion_event else None,
         "pending": len(requests) > 0 and completion_event is None,
         "elapsed_ms": elapsed_ms,
+        "pending_for_ms": pending_for_ms,
     }
 
 
@@ -3040,14 +3054,16 @@ def perform_login_playwright(page):
 
         if failure_classification == "auth_ok_access_pending":
             login_outcome = "auth_ok_access_pending"
+            pending_for_ms = token_flow.get("access_token", {}).get("pending_for_ms")
+            pending_hint = f"pending_for_ms={pending_for_ms}" if pending_for_ms is not None else "pending_for_ms=unknown"
             _write_stage_marker(
                 "login:access_token_pending",
-                f"requests={token_flow.get('access_token', {}).get('requests', 0)}",
+                f"requests={token_flow.get('access_token', {}).get('requests', 0)} {pending_hint}",
             )
             _save_page_debug_playwright(page, "login_access_token_pending")
             raise TimeoutError(
                 "Login nao concluiu: auth-token respondeu, mas access-token ficou pendente"
-                + f" | network_hint={network_hint}"
+                + f" | {pending_hint} | network_hint={network_hint}"
             )
 
         if failure_classification == "frontend_state_stuck":
