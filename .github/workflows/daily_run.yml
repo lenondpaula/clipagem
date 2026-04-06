@@ -37,14 +37,20 @@ jobs:
             pip install -r requirements.txt
           else
             echo "[WARN] requirements.txt não encontrado, instalando manualmente..."
-            pip install selenium webdriver-manager groq pymupdf streamlit requests python-dotenv
+            pip install selenium webdriver-manager playwright groq pymupdf streamlit requests python-dotenv
           fi
           
           echo "[INFO] Verificando instalações..."
           python -c "import selenium; print(f'✓ selenium: {selenium.__version__}')"
+          python -c "import playwright; print('✓ playwright')"
           python -c "import groq; print('✓ groq')"
           python -c "import fitz; print('✓ pymupdf')"
           python -c "import streamlit; print('✓ streamlit')"
+
+      - name: 🎭 Instalar Chromium do Playwright
+        run: |
+          echo "[INFO] Instalando navegador Chromium do Playwright..."
+          python -m playwright install --with-deps chromium
 
       # ==================== INSTALAR CHROME ====================
       - name: 🌐 Instalar Google Chrome

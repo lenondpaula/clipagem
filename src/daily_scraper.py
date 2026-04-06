@@ -13,6 +13,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from selenium import webdriver
 from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
@@ -49,6 +50,7 @@ FAST_PDF_CLICK_TIMEOUT = int(os.getenv("FAST_PDF_CLICK_TIMEOUT", "14"))
 FILTER_TOTAL_TIMEOUT = int(os.getenv("FILTER_TOTAL_TIMEOUT", "10"))
 PDF_FILENAME = "diario_sm_atual.pdf"
 APPLY_PUBLIC_LEGAL_FILTER = os.getenv("APPLY_PUBLIC_LEGAL_FILTER", "false").strip().lower() in ("1", "true", "yes", "on")
+PLAYWRIGHT_DEFAULT_TIMEOUT_MS = int(os.getenv("PLAYWRIGHT_DEFAULT_TIMEOUT_MS", "15000"))
 
 DIARIO_LOGIN_URL = os.getenv("DIARIO_LOGIN_URL", "")
 DIARIO_ACCESS_URL = os.getenv("DIARIO_ACCESS_URL", "")
@@ -127,6 +129,21 @@ def _save_page_debug(driver, file_prefix):
 
     try:
         _save_debug_html(f"{file_prefix}.html", driver.page_source)
+    except Exception as e:
+        print(f"[DEBUG] Falha ao salvar HTML {file_prefix}: {e}")
+
+
+def _save_page_debug_playwright(page, file_prefix):
+    """Salva screenshot e HTML da página atual via Playwright."""
+    try:
+        file_path = f"/tmp/{file_prefix}.png"
+        page.screenshot(path=file_path, full_page=True)
+        print(f"[DEBUG] Screenshot salvo: {file_path}")
+    except Exception as e:
+        print(f"[DEBUG] Falha ao salvar screenshot {file_prefix}: {e}")
+
+    try:
+        _save_debug_html(f"{file_prefix}.html", page.content())
     except Exception as e:
         print(f"[DEBUG] Falha ao salvar HTML {file_prefix}: {e}")
 
@@ -2349,8 +2366,395 @@ def diagnose_system():
         print(f"  webdriver-manager: ✓ OK")
     except ImportError:
         print(f"  webdriver-manager: ✗ NÃO INSTALADO")
+
+    # Verificar Playwright
+    try:
+        import playwright
+        version = getattr(playwright, "__version__", "instalado")
+        print(f"  Playwright: ✓ {version}")
+    except ImportError:
+        print("  Playwright: ✗ NÃO INSTALADO")
     
     print()
+
+
+def _find_first_visible_locator(page, selectors, timeout_seconds, label):
+    """Retorna o primeiro locator visível para uma lista de seletores XPath."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        for selector in selectors:
+            locator = page.locator(f"xpath={selector}")
+            try:
+                if locator.count() == 0:
+                    continue
+                candidate = locator.first
+                if candidate.is_visible():
+                    print(f"[PLAYWRIGHT] {label} encontrado com seletor: {selector}")
+                    return candidate
+            except Exception:
+                continue
+        time.sleep(0.2)
+    return None
+
+
+def _wait_login_success_playwright(page, timeout_seconds):
+    """Aguarda confirmação de autenticação por URL ou elementos da área logada."""
+    deadline = time.monotonic() + timeout_seconds
+    fatal_keywords = ["inválid", "inval", "incorret", "não confere", "nao confere", "acesso negado", "captcha", "bloque", "falhou"]
+
+    while time.monotonic() < deadline:
+        current_url = (page.url or "").lower()
+        if "/assinante/newflip" in current_url:
+            return True, None
+
+        success_markers = [
+            "xpath=//*[contains(., 'Data Edição') or contains(., 'Data Edicao')]",
+            "xpath=//h5[normalize-space()='JORNAL']",
+            "xpath=//*[@title='Visualizar PDF' or contains(@class,'mdi-file-pdf')]",
+        ]
+        for marker in success_markers:
+            try:
+                loc = page.locator(marker)
+                if loc.count() > 0 and loc.first.is_visible():
+                    return True, None
+            except Exception:
+                continue
+
+        try:
+            alert_nodes = page.locator("xpath=//*[contains(@class,'v-messages__message') or contains(@class,'error') or contains(@role,'alert')]")
+            total = min(alert_nodes.count(), 8)
+            for idx in range(total):
+                txt = " ".join((alert_nodes.nth(idx).inner_text() or "").split()).lower()
+                if any(word in txt for word in fatal_keywords):
+                    return False, txt
+        except Exception:
+            pass
+
+        time.sleep(0.7)
+
+    return None, None
+
+
+def perform_login_playwright(page):
+    """Executa login via Playwright com foco em previsibilidade e estado visível."""
+    print(f"[LOGIN] Navegando para {DIARIO_LOGIN_URL}...")
+    _write_stage_marker("login:start", DIARIO_LOGIN_URL)
+    page.goto(DIARIO_LOGIN_URL, wait_until="domcontentloaded")
+    page.wait_for_timeout(1200)
+    print("[LOGIN] Página de login carregada")
+    _save_page_debug_playwright(page, "login_page_loaded")
+
+    username_selectors = [
+        "//label[contains(., 'Entre com seu E-mail ou CPF/CNPJ')]/ancestor::div[contains(@class, 'v-field')][1]//input[contains(@class, 'v-field__input') and not(@type='hidden')]",
+        "//input[contains(@class, 'v-field__input') and @type='text' and @maxlength='100']",
+        "//input[@type='text' and @maxlength='100']",
+        "//input[contains(@placeholder,'E-mail') or contains(@placeholder,'CPF') or contains(@placeholder,'CNPJ')]",
+    ]
+    password_selectors = [
+        "//input[@type='password']",
+        "//input[contains(@placeholder, 'Senha')]",
+        "//label[contains(., 'Senha')]/ancestor::div[contains(@class, 'v-field')][1]//input",
+    ]
+    button_selectors = [
+        "//button[normalize-space()='Entrar']",
+        "//span[normalize-space()='Entrar']/ancestor::button",
+        "//button[@type='submit']",
+    ]
+
+    username = _find_first_visible_locator(page, username_selectors, LOGIN_FIELD_TIMEOUT, "campo de usuário")
+    if not username:
+        _save_page_debug_playwright(page, "login_username_not_found")
+        raise Exception("Campo de usuário não encontrado")
+    _write_stage_marker("login:username_found")
+    username.click()
+    username.fill("")
+    username.type(DIARIO_USER, delay=40)
+    print(f"[LOGIN] Usuário preenchido: {DIARIO_USER[:3]}***")
+
+    password = _find_first_visible_locator(page, password_selectors, LOGIN_FIELD_TIMEOUT, "campo de senha")
+    if not password:
+        _save_page_debug_playwright(page, "login_password_not_found")
+        raise Exception("Campo de senha não encontrado")
+    _write_stage_marker("login:password_found")
+    password.click()
+    password.fill("")
+    password.type(DIARIO_PASSWORD, delay=40)
+    print("[LOGIN] Senha preenchida")
+
+    login_button = _find_first_visible_locator(page, button_selectors, LOGIN_BUTTON_TIMEOUT, "botão Entrar")
+    if not login_button:
+        _save_page_debug_playwright(page, "login_button_not_found")
+        raise Exception("Botão 'Entrar' não encontrado")
+    _write_stage_marker("login:button_found")
+
+    login_button.click(timeout=PLAYWRIGHT_DEFAULT_TIMEOUT_MS)
+    _write_stage_marker("login:submitted_click", page.url)
+    print("[LOGIN] Submit principal realizado (Playwright click)")
+
+    validation_result, fatal_error = _wait_login_success_playwright(page, LOGIN_TOTAL_TIMEOUT)
+    if validation_result is True:
+        print(f"[LOGIN] ✓ Login realizado e validado com sucesso. URL: {page.url}")
+        _write_stage_marker("login:completed", page.url)
+        return
+
+    if validation_result is False:
+        _save_page_debug_playwright(page, "login_failed_after_click")
+        raise Exception(
+            "Login falhou após submit no Playwright: mensagem de erro explícita detectada"
+            + (f" ({fatal_error})" if fatal_error else "")
+        )
+
+    _save_page_debug_playwright(page, "login_timeout_validation")
+    raise TimeoutError("Não foi possível validar login via Playwright dentro do timeout configurado")
+
+
+def _wait_listing_ready_playwright(page, timeout_seconds=LISTING_READY_TIMEOUT):
+    """Confirma que a listagem pós-login carregou no DOM."""
+    deadline = time.monotonic() + timeout_seconds
+    readiness_selectors = [
+        "xpath=//input[contains(@placeholder, 'Pesquisar nome edição') or contains(@placeholder, 'Pesquisar nome edicao')]",
+        "xpath=//div[contains(@class,'suita-block-home') or contains(@class,'v-card')]",
+        "xpath=//*[contains(@class,'mdi-file-pdf') or contains(@title,'PDF') or contains(@aria-label,'PDF')]",
+    ]
+
+    while time.monotonic() < deadline:
+        for selector in readiness_selectors:
+            try:
+                loc = page.locator(selector)
+                if loc.count() > 0 and loc.first.is_visible():
+                    print(f"[LISTAGEM] Sinal de prontidão detectado: {selector}")
+                    _write_stage_marker("listing:ready", selector)
+                    return
+            except Exception:
+                continue
+        time.sleep(0.4)
+
+    _save_page_debug_playwright(page, "listagem_not_ready")
+    _write_stage_marker("listing:timeout")
+    raise TimeoutError("Listagem não ficou pronta após o login (Playwright)")
+
+
+def set_publication_filter_playwright(page):
+    """Configura filtro Public. Legal para Exceto quando habilitado."""
+    print("[FILTRO] Configurando filtro 'Public. Legal' como 'Exceto'...")
+    try:
+        page.screenshot(path="/tmp/filtro_debug.png", full_page=True)
+        print("[FILTRO] Screenshot salvo em /tmp/filtro_debug.png")
+    except Exception:
+        pass
+
+    combo = page.locator(
+        "xpath=//div[contains(@class, 'v-select') and .//label[contains(., 'Public. Legal')]]//input[@role='combobox']"
+    )
+    if combo.count() == 0:
+        combo = page.locator("xpath=//input[@role='combobox']")
+
+    if combo.count() == 0:
+        print("[FILTRO] AVISO: Dropdown não encontrado, continuando sem filtro")
+        return
+
+    control = combo.first
+    try:
+        current_value = (control.input_value() or "").strip().lower()
+    except Exception:
+        current_value = ""
+
+    if current_value == "exceto":
+        print("[FILTRO] Filtro já está em 'Exceto'")
+        return
+
+    control.click()
+    page.wait_for_timeout(350)
+    option = page.locator("xpath=//*[@role='option' and contains(translate(normalize-space(),'EXCETO','exceto'),'exceto')]")
+    if option.count() == 0:
+        option = page.locator("xpath=//div[contains(@class,'v-list-item') and contains(translate(normalize-space(),'EXCETO','exceto'),'exceto')]")
+
+    if option.count() == 0:
+        print("[FILTRO] AVISO: opção 'Exceto' não encontrada, continuando sem filtro")
+        return
+
+    option.first.click()
+    page.wait_for_timeout(500)
+    print("[FILTRO] Filtro 'Exceto' aplicado")
+
+
+def _is_handle_visible(handle):
+    """Verifica visibilidade do element handle no contexto do navegador."""
+    try:
+        return bool(
+            handle.evaluate(
+                """
+                (el) => {
+                    if (!el) return false;
+                    const style = window.getComputedStyle(el);
+                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                }
+                """
+            )
+        )
+    except Exception:
+        return False
+
+
+def _get_jornal_candidates_playwright(page):
+    """Coleta candidatos de cards JORNAL e seus gatilhos de PDF na listagem."""
+    cards = page.locator("xpath=//div[contains(@class,'suita-block-home') or contains(@class,'v-card')]").element_handles()
+    print(f"[PDF] Cards do grid encontrados: {len(cards)}")
+
+    candidates = []
+    blocked_terms = ["valvi", "folheto", "classificados", "classificado", "public. legal", "publicacao legal"]
+    pdf_selectors = [
+        "xpath=.//i[contains(@class,'mdi-file-pdf-box') and contains(@class,'v-icon--clickable')]",
+        "xpath=.//i[contains(@class,'mdi-file-pdf') and contains(@class,'v-icon--clickable')]",
+        "xpath=.//*[@title='Visualizar PDF' or contains(@title,'PDF') or contains(@aria-label,'PDF')]",
+        "xpath=.//*[self::button or self::a or @role='button' or @role='link'][.//i[contains(@class,'mdi-file-pdf')] or contains(@title,'PDF') or contains(@aria-label,'PDF')]",
+    ]
+
+    for card in cards:
+        try:
+            text = (card.inner_text() or "").strip()
+        except Exception:
+            continue
+
+        card_text_lower = text.lower()
+        try:
+            has_h5_jornal = bool(
+                card.eval_on_selector_all(
+                    "xpath=.//div[contains(@class, 'v-card-title')]//h5",
+                    "nodes => nodes.some(n => (n.innerText || '').trim().toUpperCase() === 'JORNAL')",
+                )
+            )
+        except Exception:
+            has_h5_jornal = False
+
+        if not has_h5_jornal and "jornal" not in card_text_lower:
+            continue
+        if any(term in card_text_lower for term in blocked_terms) and not has_h5_jornal:
+            continue
+
+        pdf_handle = None
+        for selector in pdf_selectors:
+            try:
+                nodes = card.query_selector_all(selector)
+            except Exception:
+                nodes = []
+            for node in nodes:
+                if _is_handle_visible(node):
+                    pdf_handle = node
+                    break
+            if pdf_handle:
+                break
+
+        if not pdf_handle:
+            continue
+
+        candidates.append(
+            {
+                "card": card,
+                "pdf_handle": pdf_handle,
+                "edition_number": _parse_card_edition_number(text) or -1,
+                "edition_date": _parse_card_date_ddmmyyyy(text),
+                "debug": re.sub(r"\s+", " ", text.replace("\n", " | "))[:260],
+            }
+        )
+
+    candidates.sort(
+        key=lambda item: (
+            item["edition_date"] if item["edition_date"] is not None else datetime.min,
+            item["edition_number"],
+        ),
+        reverse=True,
+    )
+    return candidates
+
+
+def access_and_download_pdf_playwright(page):
+    """Acessa listagem e baixa PDF do JORNAL mais recente com Playwright."""
+    print(f"[PDF] Navegando para {DIARIO_ACCESS_URL}...")
+    _write_stage_marker("listing:open", DIARIO_ACCESS_URL)
+    page.goto(DIARIO_ACCESS_URL, wait_until="domcontentloaded")
+    page.wait_for_timeout(1200)
+    print("[PDF] Página de acesso carregada")
+    _save_page_debug_playwright(page, "listagem_logada")
+
+    _wait_listing_ready_playwright(page)
+    if APPLY_PUBLIC_LEGAL_FILTER:
+        set_publication_filter_playwright(page)
+    else:
+        print("[FILTRO] Mantido padrão vazio (APPLY_PUBLIC_LEGAL_FILTER=false)")
+
+    candidates = _get_jornal_candidates_playwright(page)
+    if not candidates:
+        _save_page_debug_playwright(page, "jornal_not_found")
+        raise Exception("Nenhum card de JORNAL válido com ícone PDF foi encontrado (Playwright)")
+
+    selected = candidates[0]
+    print(
+        "[PDF] Selecionado JORNAL mais recente disponível: "
+        f"edição={selected['edition_number']}, "
+        f"data={selected['edition_date'].strftime('%d/%m/%Y') if selected['edition_date'] else 'N/A'}"
+    )
+    print(f"[PDF] Card selecionado (debug): {selected['debug']}")
+
+    os.makedirs(DATA_FOLDER, exist_ok=True)
+    target_path = os.path.join(DATA_FOLDER, PDF_FILENAME)
+
+    try:
+        with page.expect_download(timeout=DOWNLOAD_TIMEOUT * 1000) as download_info:
+            selected["pdf_handle"].scroll_into_view_if_needed()
+            selected["pdf_handle"].click(force=True)
+        download = download_info.value
+        download.save_as(target_path)
+        _write_stage_marker("pdf:clicked", selected["debug"])
+        _write_stage_marker("download:completed", target_path)
+    except PlaywrightTimeoutError as exc:
+        _save_page_debug_playwright(page, "download_timeout")
+        raise TimeoutError(f"Timeout aguardando download de PDF no Playwright: {exc}")
+
+    if not os.path.exists(target_path) or os.path.getsize(target_path) == 0:
+        raise Exception("Download finalizado sem arquivo PDF válido")
+
+    if not validate_downloaded_file(target_path):
+        raise Exception("Arquivo baixado não passou na validação")
+
+    print(f"[DOWNLOAD] ✓ Arquivo salvo com sucesso: {target_path}")
+    return target_path
+
+
+def run_scraper_playwright():
+    """Executa o fluxo completo de scraping usando Playwright."""
+    print("[PLAYWRIGHT] Inicializando navegador Chromium...")
+    launch_args = [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
+    ]
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True, args=launch_args)
+        context = browser.new_context(
+            viewport={"width": 1920, "height": 1080},
+            accept_downloads=True,
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/146.0.0.0 Safari/537.36"
+            ),
+            locale="pt-BR",
+        )
+        page = context.new_page()
+        page.set_default_timeout(PLAYWRIGHT_DEFAULT_TIMEOUT_MS)
+        _write_stage_marker("main:playwright_ready")
+
+        try:
+            perform_login_playwright(page)
+            pdf_path = access_and_download_pdf_playwright(page)
+            return pdf_path
+        finally:
+            context.close()
+            browser.close()
 
 
 # ==================== EXECUÇÃO PRINCIPAL ====================
@@ -2378,23 +2782,9 @@ def main():
     cleanup_old_pdfs()
     _write_stage_marker("main:cleanup_done")
     
-    driver = None
     try:
-        # Etapa 2: Setup Chrome
-        driver = setup_chrome_driver()
-        _write_stage_marker("main:chrome_ready")
-        
-        # Etapa 3: Login
-        perform_login(driver)
-        
-        # Etapa 4: Acesso, Filtro e Download
-        access_and_download_pdf(driver)
-        
-        # Etapa 5: Aguardar Download
-        pdf_path = wait_for_download_completion()
-        
-        # Etapa 6: Renomear
-        final_path = rename_pdf_file(pdf_path)
+        # Etapa 2 em diante: Fluxo completo com Playwright
+        final_path = run_scraper_playwright()
         _write_stage_marker("main:success", final_path)
         
         print("=" * 60)
@@ -2407,12 +2797,6 @@ def main():
         print(f"✗ ERRO DURANTE EXECUÇÃO: {e}")
         print("=" * 60)
         raise
-        
-    finally:
-        if driver:
-            print("[CLEANUP] Fechando browser...")
-            driver.quit()
-            print("[CLEANUP] Browser fechado")
 
 
 if __name__ == "__main__":
