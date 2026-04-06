@@ -296,7 +296,7 @@ def setup_chrome_driver():
         options.binary_location = chrome_binary
         print(f"[CHROME] Usando binário: {chrome_binary}")
     
-    options.add_argument("--headless")
+    options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
@@ -304,6 +304,11 @@ def setup_chrome_driver():
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-plugins")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/146.0.0.0 Safari/537.36"
+    )
     
     # Configurar pasta de download automático
     prefs = {
@@ -331,6 +336,14 @@ def setup_chrome_driver():
         print(f"[CHROME] ChromeDriver instalado: {service.path}")
         
         driver = webdriver.Chrome(service=service, options=options)
+        driver.execute_cdp_cmd(
+            "Page.setDownloadBehavior",
+            {
+                "behavior": "allow",
+                "downloadPath": os.path.abspath(DATA_FOLDER),
+            },
+        )
+        print(f"[CHROME] Download em headless habilitado via CDP: {os.path.abspath(DATA_FOLDER)}")
         print("[CHROME] ChromeDriver configurado com sucesso")
         
         return driver
@@ -1347,7 +1360,7 @@ def perform_login(driver):
                     _write_stage_marker("login:submitted_click", driver.current_url)
                     _log_field_lengths("tentativa_1_click_humanizado pos-submit")
 
-                    outcome, explicit_error = _wait_submit_outcome("ActionChains click", preferred_seconds=14.0)
+                    outcome, explicit_error = _wait_submit_outcome("ActionChains click", preferred_seconds=30.0)
                     saw_explicit_error = saw_explicit_error or explicit_error
                     if outcome == "success":
                         login_validated = True
