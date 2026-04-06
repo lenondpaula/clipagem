@@ -7,22 +7,11 @@ import os
 import sys
 import time
 import glob
-import stat
 import random
 import re
 from datetime import datetime
-from pathlib import Path
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-from selenium import webdriver
-from selenium.webdriver import ActionChains
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 
 
 # ==================== CARREGAMENTO DE VARIÁVEIS DE AMBIENTE ====================
@@ -2353,20 +2342,6 @@ def diagnose_system():
     else:
         print(f"  Pasta data/: ✗ será criada na primeira execução")
     
-    # Verificar Selenium
-    try:
-        import selenium
-        print(f"  Selenium: ✓ {selenium.__version__}")
-    except ImportError:
-        print(f"  Selenium: ✗ NÃO INSTALADO")
-    
-    # Verificar webdriver-manager
-    try:
-        import webdriver_manager
-        print(f"  webdriver-manager: ✓ OK")
-    except ImportError:
-        print(f"  webdriver-manager: ✗ NÃO INSTALADO")
-
     # Verificar Playwright
     try:
         import playwright
@@ -2752,6 +2727,14 @@ def run_scraper_playwright():
             perform_login_playwright(page)
             pdf_path = access_and_download_pdf_playwright(page)
             return pdf_path
+        except PlaywrightTimeoutError as e:
+            _write_stage_marker("playwright:error", f"timeout: {e}")
+            _save_page_debug_playwright(page, "playwright_timeout")
+            raise
+        except Exception as e:
+            _write_stage_marker("playwright:error", str(e))
+            _save_page_debug_playwright(page, "playwright_error")
+            raise
         finally:
             context.close()
             browser.close()

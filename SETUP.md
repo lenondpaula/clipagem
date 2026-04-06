@@ -1,237 +1,84 @@
-# 🚀 Guia de Setup - Clipagem Digital
+# Guia de Setup - Clipagem Digital (Playwright)
 
-## Instalação Rápida
+## 1) Clone e ambiente
 
-### 1. Clonar Repositório
 ```bash
 git clone https://github.com/lenondpaula/clipagem.git
 cd clipagem
+python -m venv .venv
+source .venv/bin/activate
 ```
 
-### 2. Criar Ambiente Virtual
-```bash
-python -m venv venv
-source venv/bin/activate  # Linux/macOS
-# ou
-venv\Scripts\activate     # Windows
-```
+## 2) Dependencias
 
-### 3. Instalar Dependências
 ```bash
+python -m pip install --upgrade pip
 pip install -r requirements.txt
+python -m playwright install --with-deps chromium
 ```
 
-### 4. Configurar Variáveis de Ambiente
+## 3) Variaveis
 
-Copie o arquivo de exemplo e preencha com suas credenciais:
-```bash
-cp .env.example .env
-```
+Crie `.env` com:
 
-Edite o arquivo `.env` e preencha:
 ```env
-DIARIO_LOGIN_URL=https://seu_url_de_login
-DIARIO_ACCESS_URL=https://seu_url_de_acesso
-DIARIO_USER=seu_usuario
+DIARIO_LOGIN_URL=https://diariosm.com.br/assinante/login?redirect=/newflip
+DIARIO_ACCESS_URL=https://diariosm.com.br/assinante/newflip
+DIARIO_USER=seu_email
 DIARIO_PASS=sua_senha
-GROQ_API_KEY=sua_chave_api_groq
+GROQ_API_KEY=sua_chave
 ```
 
-### 5. Testar Scraper
+## 4) Testes manuais
+
 ```bash
 python src/daily_scraper.py
-```
-
-### 6. Testar Análise
-```bash
 python src/analyzer.py
+streamlit run src/app.py
 ```
 
-### 7. Executar Interface
+## 5) GitHub Actions
+
+No secret `SECRETES`, inclua:
+
+```env
+DIARIO_LOGIN_URL=...
+DIARIO_ACCESS_URL=...
+DIARIO_USER=...
+DIARIO_PASS=...
+GROQ_API_KEY=...
+```
+
+No Streamlit Cloud, para disparo manual via app:
+
+```toml
+GH_TOKEN="ghp_..."
+```
+
+## Troubleshooting Playwright
+
+### Erro de navegador nao instalado
+
+```text
+Executable doesn't exist .../chromium
+```
+
+Solucao:
+
 ```bash
-streamlit run app.py
+python -m playwright install --with-deps chromium
 ```
 
----
+### Timeout de login/listagem
 
-## 📁 Estrutura de Diretórios
+Verifique artifacts do run:
 
-```
-clipagem/
-├── .env                    # Credenciais (não versionado)
-├── .env.example           # Exemplo de .env
-├── .gitignore             # Ignorar arquivos sensíveis
-├── requirements.txt       # Dependências Python
-├── README.md
-├── app.py                 # Interface Streamlit
-├── src/
-│   ├── daily_scraper.py   # Download do PDF
-│   └── analyzer.py        # Análise com Gemini
-├── data/                  # Arquivos gerados (não versionado)
-│   ├── diario_sm_atual.pdf
-│   └── clipagem_hoje.json
-├── docs/
-│   └── LOGIN_SELECTORS.md # Documentação de seletores
-└── .github/
-    ├── copilot-instructions.md
-    └── workflows/
-        └── daily_run.yml  # Automação GitHub Actions
-```
+- `/tmp/login_error.*`
+- `/tmp/playwright_timeout.*`
+- `/tmp/listagem_not_ready.*`
 
----
+### Falha no trigger pelo Streamlit
 
-## 🔐 Variáveis de Ambiente
+- Confirmar `GH_TOKEN` valido no Streamlit Cloud.
+- Confirmar workflow com `on: workflow_dispatch` ativo em `main`.
 
-### Diário Oficial
-| Variável | Descrição |
-|----------|-----------|
-| `DIARIO_LOGIN_URL` | URL da página de login |
-| `DIARIO_ACCESS_URL` | URL onde o PDF está acessível |
-| `DIARIO_USER` | Usuário/Email de login |
-| `DIARIO_PASS` | Senha de login |
-
-### Groq API
-| Variável | Descrição |
-|----------|-----------|
-| `GROQ_API_KEY` | Chave API do Groq |
-
-### Obtendo as Credenciais
-
-#### 1. **DIARIO_LOGIN_URL** e **DIARIO_ACCESS_URL**
-- Visite o site do Diário Oficial
-- Copie a URL da página de login
-- Copie a URL onde o PDF fica disponível para download
-
-#### 2. **DIARIO_USER** e **DIARIO_PASS**
-- Use suas credenciais de acesso ao sistema
-
-#### 3. **GROQ_API_KEY**
-- Visite: https://console.groq.com/keys
-- Crie uma nova chave de API
-- Copie e guarde em local seguro
-
----
-
-## ⚙️ Configuração do GitHub Actions (Automação)
-
-Se quiser usar o workflow automático no GitHub Actions, configure os secrets:
-
-1. Vá para: **Settings → Secrets and variables → Actions**
-2. Adicione os seguintes secrets:
-   - `DIARIO_LOGIN_URL`
-   - `DIARIO_ACCESS_URL`
-   - `DIARIO_USER`
-   - `DIARIO_PASS`
-   - `GROQ_API_KEY`
-
-O workflow executará automaticamente todos os dias às 06:15 (Brasília).
-
----
-
-## 🧪 Testando Localmente
-
-### Testar apenas download (daily_scraper.py)
-```bash
-export DIARIO_LOGIN_URL="sua_url"
-export DIARIO_ACCESS_URL="sua_url"
-export DIARIO_USER="seu_usuario"
-export DIARIO_PASS="sua_senha"
-
-python src/daily_scraper.py
-```
-
-### Testar análise (analyzer.py)
-```bash
-export GROQ_API_KEY="sua_chave"
-
-python src/analyzer.py
-```
-
-### Testar interface (app.py)
-```bash
-streamlit run app.py
-```
-
----
-
-## 🐛 Troubleshooting
-
-### Chrome não encontrado
-```
-[CHROME] ERRO ao configurar ChromeDriver
-```
-**Solução**: Instale Google Chrome:
-```bash
-# Linux
-sudo apt-get install google-chrome-stable
-
-# macOS
-brew install google-chrome
-
-# Windows
-# Baixe de https://www.google.com/chrome/
-```
-
-### Módulo não encontrado
-```
-ModuleNotFoundError: No module named 'dotenv'
-```
-**Solução**: Instale as dependências:
-```bash
-pip install -r requirements.txt
-```
-
-### Credenciais não funcionam
-**Verificar**:
-1. Arquivo `.env` existe na raiz do projeto?
-2. Variáveis estão preenchidas corretamente?
-3. Senha não contém caracteres especiais que precisam escape?
-
-### Workflow fica como "Skipped"
-**Sintoma**:
-- O run é criado via workflow_dispatch, mas encerra em segundos com status Skipped.
-
-**Causa comum**:
-- Job com condição fixa de pausa no YAML (ex.: if: ${{ false }}).
-
-**Solução**:
-- Revisar o job no arquivo `.github/workflows/daily_run.yml` e remover a condição fixa.
-- Garantir que o workflow atualizado está em `main` antes de testar pelo botão da app.
-
-### Login falha
-O script tira screenshot automático em `/tmp/login_error.png`
-- Verifique se o seletor de placeholder mudou
-- Adicione novo seletor em `src/daily_scraper.py` conforme docs
-
----
-
-## 📊 Fluxo de Execução
-
-```
-1. daily_scraper.py
-   ├── Limpeza de PDFs antigos
-   ├── Download do Diário
-   └── Salva em data/diario_sm_atual.pdf
-
-2. analyzer.py
-   ├── Extrai texto do PDF
-   ├── Envia para Groq
-   └── Salva em data/clipagem_hoje.json
-
-3. app.py
-   ├── Carrega JSON
-   ├── Exibe interface
-   └── Permite compartilhar no WhatsApp
-```
-
----
-
-## 📞 Suporte
-
-- **Issues**: https://github.com/lenondpaula/clipagem/issues
-- **Documentação**: Veja `docs/`
-- **Desenvolvedor**: Lenon de Paula
-
----
-
-**Última atualização**: Março 2026

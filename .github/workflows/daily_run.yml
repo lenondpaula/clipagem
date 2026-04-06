@@ -37,11 +37,10 @@ jobs:
             pip install -r requirements.txt
           else
             echo "[WARN] requirements.txt não encontrado, instalando manualmente..."
-            pip install selenium webdriver-manager playwright groq pymupdf streamlit requests python-dotenv
+            pip install playwright groq pymupdf streamlit requests python-dotenv
           fi
           
           echo "[INFO] Verificando instalações..."
-          python -c "import selenium; print(f'✓ selenium: {selenium.__version__}')"
           python -c "import playwright; print('✓ playwright')"
           python -c "import groq; print('✓ groq')"
           python -c "import fitz; print('✓ pymupdf')"
@@ -202,6 +201,8 @@ jobs:
             /tmp/login_password_not_found.*
             /tmp/login_button_not_found.*
             /tmp/login_error.*
+            /tmp/playwright_error.*
+            /tmp/playwright_timeout.*
             /tmp/listagem_logada.*
             /tmp/listagem_not_ready.*
             /tmp/listagem_cards_summary.txt
