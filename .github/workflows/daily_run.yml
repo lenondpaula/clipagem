@@ -201,6 +201,8 @@ jobs:
             /tmp/login_password_not_found.*
             /tmp/login_button_not_found.*
             /tmp/login_error.*
+            /tmp/login_recaptcha_blocked.*
+            /tmp/login_form_locked.*
             /tmp/playwright_error.*
             /tmp/playwright_timeout.*
             /tmp/listagem_logada.*
