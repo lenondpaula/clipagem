@@ -74,6 +74,9 @@ python -m playwright install --with-deps chromium
 Verifique artifacts do run:
 
 - `/tmp/login_error.*`
+- `/tmp/login_network_events.jsonl`
+- `/tmp/login_network_summary.json`
+- `/tmp/login_network_failures.txt`
 - `/tmp/playwright_timeout.*`
 - `/tmp/listagem_not_ready.*`
 

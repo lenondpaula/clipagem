@@ -51,23 +51,6 @@ jobs:
           echo "[INFO] Instalando navegador Chromium do Playwright..."
           python -m playwright install --with-deps chromium
 
-      # ==================== INSTALAR CHROME ====================
-      - name: 🌐 Instalar Google Chrome
-        run: |
-          echo "[INFO] Atualizando lista de pacotes..."
-          sudo apt-get update
-          
-          echo "[INFO] Instalando Google Chrome..."
-          if ! sudo apt-get install -y google-chrome-stable; then
-            echo "[WARN] apt-get falhou, tentando instalar via .deb..."
-            wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/google-chrome.deb
-            sudo apt-get install -y /tmp/google-chrome.deb
-          fi
-          
-          echo "[INFO] Verificando instalação..."
-          google-chrome --version
-          which google-chrome
-
       # ==================== EXECUTAR DAILY SCRAPER ====================
       - name: 🔐 Carregar secrets do arquivo
         run: |
@@ -203,6 +186,9 @@ jobs:
             /tmp/login_error.*
             /tmp/login_recaptcha_blocked.*
             /tmp/login_form_locked.*
+            /tmp/login_network_events.jsonl
+            /tmp/login_network_summary.json
+            /tmp/login_network_failures.txt
             /tmp/playwright_error.*
             /tmp/playwright_timeout.*
             /tmp/listagem_logada.*

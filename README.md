@@ -66,6 +66,9 @@ Em erro, sao salvos artifacts com:
 
 - `/tmp/login_page_loaded.*`
 - `/tmp/login_error.*`
+- `/tmp/login_network_events.jsonl`
+- `/tmp/login_network_summary.json`
+- `/tmp/login_network_failures.txt`
 - `/tmp/playwright_error.*`
 - `/tmp/playwright_timeout.*`
 - `/tmp/listagem_logada.*`

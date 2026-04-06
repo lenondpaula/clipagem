@@ -31,15 +31,6 @@ jobs:
         run: |
           python -m playwright install --with-deps chromium
 
-      - name: 🌐 Instalar Google Chrome
-        run: |
-          sudo apt-get update
-          if ! sudo apt-get install -y google-chrome-stable; then
-            wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/google-chrome.deb
-            sudo apt-get install -y /tmp/google-chrome.deb
-          fi
-          google-chrome --version
-
       - name: 🔁 Rodar keep alive (Playwright)
         env:
           KEEP_ALIVE_URL: "https://clipagem-secom.streamlit.app/"

@@ -9,7 +9,9 @@ import time
 import glob
 import random
 import re
+import json
 from datetime import datetime
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
@@ -40,6 +42,7 @@ FILTER_TOTAL_TIMEOUT = int(os.getenv("FILTER_TOTAL_TIMEOUT", "10"))
 PDF_FILENAME = "diario_sm_atual.pdf"
 APPLY_PUBLIC_LEGAL_FILTER = os.getenv("APPLY_PUBLIC_LEGAL_FILTER", "false").strip().lower() in ("1", "true", "yes", "on")
 PLAYWRIGHT_DEFAULT_TIMEOUT_MS = int(os.getenv("PLAYWRIGHT_DEFAULT_TIMEOUT_MS", "15000"))
+LOGIN_NETWORK_EVENTS_MAX = int(os.getenv("LOGIN_NETWORK_EVENTS_MAX", "800"))
 
 DIARIO_LOGIN_URL = os.getenv("DIARIO_LOGIN_URL", "")
 DIARIO_ACCESS_URL = os.getenv("DIARIO_ACCESS_URL", "")
@@ -2308,39 +2311,17 @@ def diagnose_system():
     print(f"  Plataforma: {sys.platform}")
     print(f"  Diretório atual: {os.getcwd()}")
     
-    # Verificar Chrome
-    chrome_paths = [
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    ]
-    
-    chrome_found = None
-    for path in chrome_paths:
-        if os.path.exists(path):
-            chrome_found = path
-            try:
-                import subprocess
-                version = subprocess.check_output([chrome_found, "--version"], 
-                                                stderr=subprocess.DEVNULL).decode().strip()
-                print(f"  Chrome: ✓ {path}")
-                print(f"           {version}")
-            except:
-                print(f"  Chrome: ✓ {path}")
-            break
-    
-    if not chrome_found:
-        print(f"  Chrome: ✗ NÃO ENCONTRADO")
-        print(f"  Locais procurados:")
-        for path in chrome_paths:
-            print(f"    - {path}")
-    
     # Verificar pasta data
     if os.path.exists(DATA_FOLDER):
         print(f"  Pasta data/: ✓ {os.path.abspath(DATA_FOLDER)}")
     else:
         print(f"  Pasta data/: ✗ será criada na primeira execução")
+
+    playwright_browsers_dir = os.path.expanduser("~/.cache/ms-playwright")
+    if os.path.exists(playwright_browsers_dir):
+        print(f"  Playwright browsers: ✓ {playwright_browsers_dir}")
+    else:
+        print("  Playwright browsers: ? cache não encontrado (runner pode instalar em runtime)")
     
     # Verificar Playwright
     try:
@@ -2370,6 +2351,226 @@ def _find_first_visible_locator(page, selectors, timeout_seconds, label):
                 continue
         time.sleep(0.2)
     return None
+
+
+def _sanitize_url_for_network_log(raw_url):
+    """Sanitiza URL para log de rede removendo/mascarando query params sensíveis."""
+    sensitive_tokens = (
+        "password", "pass", "token", "authorization", "cookie",
+        "g-recaptcha-response", "recaptcha", "secret", "session", "jwt"
+    )
+
+    if not raw_url:
+        return ""
+
+    try:
+        parts = urlsplit(raw_url)
+        query_pairs = parse_qsl(parts.query, keep_blank_values=True)
+        sanitized_pairs = []
+        for key, value in query_pairs:
+            lower_key = key.lower()
+            if any(token in lower_key for token in sensitive_tokens):
+                sanitized_pairs.append((key, "***"))
+            else:
+                sanitized_pairs.append((key, value))
+
+        safe_query = urlencode(sanitized_pairs, doseq=True)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, safe_query, ""))
+    except Exception:
+        return raw_url
+
+
+def _is_login_related_url(url):
+    """Determina se uma URL é potencialmente relacionada ao fluxo de autenticação."""
+    lowered = (url or "").lower()
+    return any(
+        token in lowered
+        for token in (
+            "/assinante/login",
+            "/assinante/newflip",
+            "auth",
+            "token",
+            "captcha",
+            "recaptcha",
+            "session",
+        )
+    )
+
+
+def _start_login_network_capture(page):
+    """Inicia coleta de eventos de rede durante o login Playwright."""
+    capture = {
+        "active": False,
+        "events": [],
+        "listeners": [],
+        "started_at": time.time(),
+        "max_events": LOGIN_NETWORK_EVENTS_MAX,
+    }
+
+    def append_event(payload):
+        if len(capture["events"]) < capture["max_events"]:
+            capture["events"].append(payload)
+
+    try:
+        def on_request(request):
+            post_data_size = 0
+            try:
+                post_data = request.post_data or ""
+                post_data_size = len(post_data)
+            except Exception:
+                post_data_size = 0
+
+            append_event(
+                {
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "event": "request",
+                    "method": request.method,
+                    "url": _sanitize_url_for_network_log(request.url),
+                    "resource_type": request.resource_type,
+                    "is_navigation": request.is_navigation_request(),
+                    "post_data_size": post_data_size,
+                }
+            )
+
+        def on_response(response):
+            request = response.request
+            append_event(
+                {
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "event": "response",
+                    "method": request.method,
+                    "url": _sanitize_url_for_network_log(response.url),
+                    "resource_type": request.resource_type,
+                    "status": response.status,
+                    "ok": response.ok,
+                }
+            )
+
+        def on_request_failed(request):
+            failure = ""
+            try:
+                raw_failure = request.failure
+                if isinstance(raw_failure, str):
+                    failure = raw_failure
+                elif isinstance(raw_failure, dict):
+                    failure = raw_failure.get("errorText", "")
+                elif raw_failure:
+                    failure = str(raw_failure)
+            except Exception:
+                failure = "unknown"
+
+            append_event(
+                {
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "event": "requestfailed",
+                    "method": request.method,
+                    "url": _sanitize_url_for_network_log(request.url),
+                    "resource_type": request.resource_type,
+                    "failure": failure,
+                }
+            )
+
+        page.on("request", on_request)
+        page.on("response", on_response)
+        page.on("requestfailed", on_request_failed)
+
+        capture["listeners"] = [
+            ("request", on_request),
+            ("response", on_response),
+            ("requestfailed", on_request_failed),
+        ]
+        capture["active"] = True
+        _write_stage_marker("login:network_capture_start")
+    except Exception as e:
+        print(f"[LOGIN][NET] Aviso: falha ao iniciar captura de rede: {e}")
+
+    return capture
+
+
+def _build_login_network_hint(events, max_items=4):
+    """Monta resumo curto das últimas respostas relacionadas a login."""
+    login_responses = []
+    for event in events:
+        if event.get("event") != "response":
+            continue
+        url = event.get("url", "")
+        if _is_login_related_url(url):
+            login_responses.append(event)
+
+    if not login_responses:
+        return "sem_respostas_login_relacionadas"
+
+    tail = login_responses[-max_items:]
+    chunks = []
+    for item in tail:
+        status = item.get("status", "?")
+        method = item.get("method", "?")
+        url = item.get("url", "")
+        chunks.append(f"{status} {method} {url}")
+    return " | ".join(chunks)
+
+
+def _stop_login_network_capture(page, capture, outcome):
+    """Finaliza captura de rede, salva artifacts e retorna resumo."""
+    if capture is None:
+        return None
+
+    for event_name, listener in capture.get("listeners", []):
+        try:
+            page.remove_listener(event_name, listener)
+        except Exception:
+            continue
+
+    events = capture.get("events", [])
+    responses = [e for e in events if e.get("event") == "response"]
+    failures = [
+        e for e in events
+        if e.get("event") == "requestfailed"
+        or (e.get("event") == "response" and isinstance(e.get("status"), int) and e.get("status") >= 400)
+    ]
+    status_counts = {}
+    for item in responses:
+        status = str(item.get("status", "?"))
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    summary = {
+        "outcome": outcome,
+        "events_total": len(events),
+        "responses_total": len(responses),
+        "failures_total": len(failures),
+        "status_counts": status_counts,
+        "events_truncated": len(events) >= capture.get("max_events", LOGIN_NETWORK_EVENTS_MAX),
+        "network_hint": _build_login_network_hint(events),
+        "duration_seconds": round(max(0.0, time.time() - capture.get("started_at", time.time())), 2),
+        "finished_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    try:
+        with open("/tmp/login_network_events.jsonl", "w", encoding="utf-8") as handle:
+            for event in events:
+                handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+        with open("/tmp/login_network_summary.json", "w", encoding="utf-8") as handle:
+            json.dump(summary, handle, ensure_ascii=False, indent=2)
+
+        with open("/tmp/login_network_failures.txt", "w", encoding="utf-8") as handle:
+            if failures:
+                for item in failures:
+                    if item.get("event") == "requestfailed":
+                        line = f"[{item.get('ts')}] requestfailed {item.get('method')} {item.get('url')} | {item.get('failure', '')}"
+                    else:
+                        line = f"[{item.get('ts')}] response {item.get('status')} {item.get('method')} {item.get('url')}"
+                    handle.write(line + "\n")
+            else:
+                handle.write("no_failures_detected\n")
+    except Exception as e:
+        print(f"[LOGIN][NET] Aviso: falha ao persistir artifacts de rede: {e}")
+
+    _write_stage_marker(
+        "login:network_capture_end",
+        f"events={summary['events_total']} responses={summary['responses_total']} failures={summary['failures_total']}"
+    )
+    return summary
 
 
 def _snapshot_login_form_state_playwright(page):
@@ -2460,84 +2661,109 @@ def perform_login_playwright(page):
     """Executa login via Playwright com foco em previsibilidade e estado visível."""
     print(f"[LOGIN] Navegando para {DIARIO_LOGIN_URL}...")
     _write_stage_marker("login:start", DIARIO_LOGIN_URL)
-    page.goto(DIARIO_LOGIN_URL, wait_until="domcontentloaded")
-    page.wait_for_timeout(1200)
-    print("[LOGIN] Página de login carregada")
-    _save_page_debug_playwright(page, "login_page_loaded")
+    login_outcome = "unknown"
+    network_capture = _start_login_network_capture(page)
 
-    username_selectors = [
-        "//label[contains(., 'Entre com seu E-mail ou CPF/CNPJ')]/ancestor::div[contains(@class, 'v-field')][1]//input[contains(@class, 'v-field__input') and not(@type='hidden')]",
-        "//input[contains(@class, 'v-field__input') and @type='text' and @maxlength='100']",
-        "//input[@type='text' and @maxlength='100']",
-        "//input[contains(@placeholder,'E-mail') or contains(@placeholder,'CPF') or contains(@placeholder,'CNPJ')]",
-    ]
-    password_selectors = [
-        "//input[@type='password']",
-        "//input[contains(@placeholder, 'Senha')]",
-        "//label[contains(., 'Senha')]/ancestor::div[contains(@class, 'v-field')][1]//input",
-    ]
-    button_selectors = [
-        "//button[normalize-space()='Entrar']",
-        "//span[normalize-space()='Entrar']/ancestor::button",
-        "//button[@type='submit']",
-    ]
+    try:
+        page.goto(DIARIO_LOGIN_URL, wait_until="domcontentloaded")
+        page.wait_for_timeout(1200)
+        print("[LOGIN] Página de login carregada")
+        _save_page_debug_playwright(page, "login_page_loaded")
 
-    username = _find_first_visible_locator(page, username_selectors, LOGIN_FIELD_TIMEOUT, "campo de usuário")
-    if not username:
-        _save_page_debug_playwright(page, "login_username_not_found")
-        raise Exception("Campo de usuário não encontrado")
-    _write_stage_marker("login:username_found")
-    username.click()
-    username.fill("")
-    username.type(DIARIO_USER, delay=40)
-    print(f"[LOGIN] Usuário preenchido: {DIARIO_USER[:3]}***")
+        username_selectors = [
+            "//label[contains(., 'Entre com seu E-mail ou CPF/CNPJ')]/ancestor::div[contains(@class, 'v-field')][1]//input[contains(@class, 'v-field__input') and not(@type='hidden')]",
+            "//input[contains(@class, 'v-field__input') and @type='text' and @maxlength='100']",
+            "//input[@type='text' and @maxlength='100']",
+            "//input[contains(@placeholder,'E-mail') or contains(@placeholder,'CPF') or contains(@placeholder,'CNPJ')]",
+        ]
+        password_selectors = [
+            "//input[@type='password']",
+            "//input[contains(@placeholder, 'Senha')]",
+            "//label[contains(., 'Senha')]/ancestor::div[contains(@class, 'v-field')][1]//input",
+        ]
+        button_selectors = [
+            "//button[normalize-space()='Entrar']",
+            "//span[normalize-space()='Entrar']/ancestor::button",
+            "//button[@type='submit']",
+        ]
 
-    password = _find_first_visible_locator(page, password_selectors, LOGIN_FIELD_TIMEOUT, "campo de senha")
-    if not password:
-        _save_page_debug_playwright(page, "login_password_not_found")
-        raise Exception("Campo de senha não encontrado")
-    _write_stage_marker("login:password_found")
-    password.click()
-    password.fill("")
-    password.type(DIARIO_PASSWORD, delay=40)
-    print("[LOGIN] Senha preenchida")
+        username = _find_first_visible_locator(page, username_selectors, LOGIN_FIELD_TIMEOUT, "campo de usuário")
+        if not username:
+            login_outcome = "username_not_found"
+            _save_page_debug_playwright(page, "login_username_not_found")
+            raise Exception("Campo de usuário não encontrado")
+        _write_stage_marker("login:username_found")
+        username.click()
+        username.fill("")
+        username.type(DIARIO_USER, delay=40)
+        print(f"[LOGIN] Usuário preenchido: {DIARIO_USER[:3]}***")
 
-    login_button = _find_first_visible_locator(page, button_selectors, LOGIN_BUTTON_TIMEOUT, "botão Entrar")
-    if not login_button:
-        _save_page_debug_playwright(page, "login_button_not_found")
-        raise Exception("Botão 'Entrar' não encontrado")
-    _write_stage_marker("login:button_found")
+        password = _find_first_visible_locator(page, password_selectors, LOGIN_FIELD_TIMEOUT, "campo de senha")
+        if not password:
+            login_outcome = "password_not_found"
+            _save_page_debug_playwright(page, "login_password_not_found")
+            raise Exception("Campo de senha não encontrado")
+        _write_stage_marker("login:password_found")
+        password.click()
+        password.fill("")
+        password.type(DIARIO_PASSWORD, delay=40)
+        print("[LOGIN] Senha preenchida")
 
-    login_button.click(timeout=PLAYWRIGHT_DEFAULT_TIMEOUT_MS)
-    _write_stage_marker("login:submitted_click", page.url)
-    print("[LOGIN] Submit principal realizado (Playwright click)")
+        login_button = _find_first_visible_locator(page, button_selectors, LOGIN_BUTTON_TIMEOUT, "botão Entrar")
+        if not login_button:
+            login_outcome = "button_not_found"
+            _save_page_debug_playwright(page, "login_button_not_found")
+            raise Exception("Botão 'Entrar' não encontrado")
+        _write_stage_marker("login:button_found")
 
-    validation_result, fatal_error = _wait_login_success_playwright(page, LOGIN_TOTAL_TIMEOUT)
-    if validation_result is True:
-        print(f"[LOGIN] ✓ Login realizado e validado com sucesso. URL: {page.url}")
-        _write_stage_marker("login:completed", page.url)
-        return
+        login_button.click(timeout=PLAYWRIGHT_DEFAULT_TIMEOUT_MS)
+        _write_stage_marker("login:submitted_click", page.url)
+        print("[LOGIN] Submit principal realizado (Playwright click)")
 
-    if validation_result is False:
-        _save_page_debug_playwright(page, "login_failed_after_click")
-        raise Exception(
-            "Login falhou após submit no Playwright: mensagem de erro explícita detectada"
-            + (f" ({fatal_error})" if fatal_error else "")
-        )
+        validation_result, fatal_error = _wait_login_success_playwright(page, LOGIN_TOTAL_TIMEOUT)
+        if validation_result is True:
+            login_outcome = "success"
+            print(f"[LOGIN] ✓ Login realizado e validado com sucesso. URL: {page.url}")
+            _write_stage_marker("login:completed", page.url)
+            return
 
-    final_snapshot = _snapshot_login_form_state_playwright(page)
-    if final_snapshot.get("button_disabled") and final_snapshot.get("disabled_inputs", 0) >= 2:
-        _write_stage_marker(
-            "login:form_locked",
-            f"disabled_inputs={final_snapshot.get('disabled_inputs', 0)}"
-        )
-        _save_page_debug_playwright(page, "login_form_locked")
+        network_hint = _build_login_network_hint(network_capture.get("events", []))
+
+        if validation_result is False:
+            login_outcome = "explicit_error"
+            _save_page_debug_playwright(page, "login_failed_after_click")
+            raise Exception(
+                "Login falhou após submit no Playwright: mensagem de erro explícita detectada"
+                + (f" ({fatal_error})" if fatal_error else "")
+                + f" | network_hint={network_hint}"
+            )
+
+        final_snapshot = _snapshot_login_form_state_playwright(page)
+        if final_snapshot.get("button_disabled") and final_snapshot.get("disabled_inputs", 0) >= 2:
+            login_outcome = "form_locked"
+            _write_stage_marker(
+                "login:form_locked",
+                f"disabled_inputs={final_snapshot.get('disabled_inputs', 0)}"
+            )
+            _save_page_debug_playwright(page, "login_form_locked")
+            raise TimeoutError(
+                "Login não concluiu: formulário permaneceu desabilitado durante toda a janela de validação"
+                + f" | network_hint={network_hint}"
+            )
+
+        login_outcome = "timeout"
+        _save_page_debug_playwright(page, "login_timeout_validation")
         raise TimeoutError(
-            "Login não concluiu: formulário permaneceu desabilitado durante toda a janela de validação"
+            "Não foi possível validar login via Playwright dentro do timeout configurado"
+            + f" | network_hint={network_hint}"
         )
-
-    _save_page_debug_playwright(page, "login_timeout_validation")
-    raise TimeoutError("Não foi possível validar login via Playwright dentro do timeout configurado")
+    finally:
+        summary = _stop_login_network_capture(page, network_capture, login_outcome)
+        if summary:
+            _write_stage_marker(
+                "login:network_summary",
+                f"events={summary.get('events_total', 0)} responses={summary.get('responses_total', 0)} failures={summary.get('failures_total', 0)}"
+            )
 
 
 def _wait_listing_ready_playwright(page, timeout_seconds=LISTING_READY_TIMEOUT):
