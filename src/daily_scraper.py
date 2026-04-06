@@ -296,7 +296,7 @@ def setup_chrome_driver():
         options.binary_location = chrome_binary
         print(f"[CHROME] Usando binário: {chrome_binary}")
     
-    options.add_argument("--headless=new")
+    options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
@@ -304,11 +304,6 @@ def setup_chrome_driver():
     options.add_argument("--window-size=1920,1080")
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-plugins")
-    options.add_argument(
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/144.0.0.0 Safari/537.36"
-    )
     
     # Configurar pasta de download automático
     prefs = {
@@ -336,14 +331,6 @@ def setup_chrome_driver():
         print(f"[CHROME] ChromeDriver instalado: {service.path}")
         
         driver = webdriver.Chrome(service=service, options=options)
-        driver.execute_cdp_cmd(
-            "Page.setDownloadBehavior",
-            {
-                "behavior": "allow",
-                "downloadPath": os.path.abspath(DATA_FOLDER),
-            },
-        )
-        print(f"[CHROME] Download em headless habilitado via CDP: {os.path.abspath(DATA_FOLDER)}")
         print("[CHROME] ChromeDriver configurado com sucesso")
         
         return driver
@@ -534,23 +521,40 @@ def _is_user_logged_in(driver):
         except Exception:
             continue
 
-    # Estratégia 2: Procurar por mensagens de ERRO de login (fortes).
-    # Se o login falhou, haverá mensagem de erro na página
+    # Estratégia 2: Procurar por mensagens de ERRO de login (somente fatais).
+    # Evita falso negativo com mensagens de validação suave, ex.: "Obrigatório".
     error_indicators = [
-        "//div[contains(@class, 'error') or contains(@class, 'alert-error')][contains(text(), 'E-mail') or contains(text(), 'Senha') or contains(text(), 'inválid')]",
-        "//span[contains(@class, 'error') or contains(@class, 'text-danger')][contains(text(), 'inválid') or contains(text(), 'incorreto') or contains(text(), 'falhou')]",
-        "//*[self::div or self::span or self::p][contains(text(), 'E-mail')][contains(text(), 'Senha') or contains(text(), 'inválid') or contains(text(), 'incorreto')]",
+        "//*[contains(@class, 'v-messages__message') or contains(@class, 'v-field__error') or contains(@class, 'error') or contains(@class, 'alert') or contains(@role, 'alert')]",
     ]
+
+    fatal_keywords = (
+        "inválid", "inval", "incorret", "não confere", "nao confere",
+        "acesso negado", "captcha", "bloque", "tentativa", "falhou", "credenc"
+    )
+    soft_keywords = ("obrigat", "preencha", "campo obrigatório", "campo obrigatorio")
 
     for error_selector in error_indicators:
         try:
             elements = driver.find_elements(By.XPATH, error_selector)
-            if elements and elements[0].is_displayed():
-                error_text = (elements[0].text or "").strip()
-                print(f"[LOGIN] ✗ Erro de login detectado: {error_text}")
-                return False
         except Exception:
             continue
+
+        for element in elements:
+            try:
+                if not element.is_displayed():
+                    continue
+                error_text = " ".join((element.text or "").split())
+                if not error_text:
+                    continue
+
+                lowered = error_text.lower()
+                if any(k in lowered for k in soft_keywords):
+                    continue
+                if any(k in lowered for k in fatal_keywords):
+                    print(f"[LOGIN] ✗ Erro de login detectado: {error_text}")
+                    return False
+            except Exception:
+                continue
 
     # Estratégia 3: Formulário ainda visível significa estado possivelmente transitório
     # (não tratar como falha imediata para evitar falso negativo logo após o clique).
@@ -701,30 +705,6 @@ def perform_login(driver):
             except Exception:
                 pass
             return None
-
-        def _type_text_with_action_chains(field, value, field_name, mask=False):
-            """Digita texto caractere a caractere para acionar eventos do frontend (Vuetify)."""
-            if not field:
-                return False
-
-            try:
-                _human_scroll_into_view(driver, field)
-                try:
-                    field.clear()
-                except Exception:
-                    pass
-
-                ActionChains(driver).move_to_element(field).click().pause(0.2).perform()
-                for char in value:
-                    ActionChains(driver).send_keys(char).perform()
-                    time.sleep(random.uniform(0.05, 0.15))
-
-                shown = f"len={len(value)}" if mask else (value[:3] + "***" if value else "")
-                print(f"[LOGIN] {field_name} preenchido via ActionChains: {shown}")
-                return True
-            except Exception as e:
-                print(f"[LOGIN] ERRO ao preencher {field_name} via ActionChains: {e}")
-                return False
         
         # ==================== CAMPO DE USUÁRIO ====================
         print("[LOGIN] Procurando campo de E-mail/Usuário...")
@@ -791,9 +771,10 @@ def perform_login(driver):
         
         print(f"[LOGIN] Campo de Usuário encontrado")
         _write_stage_marker("login:username_found")
-        if not _type_text_with_action_chains(username_field, DIARIO_USER, "usuário"):
-            _save_page_debug(driver, "login_username_fill_failed")
-            raise Exception("Falha ao preencher campo de usuário com ActionChains")
+        _human_scroll_into_view(driver, username_field)
+        username_field.clear()
+        _human_pause(0.15, 0.4)
+        username_field.send_keys(DIARIO_USER)
         _human_pause(0.25, 0.7)
         print(f"[LOGIN] Usuário preenchido: {DIARIO_USER[:3]}***")
         
@@ -851,11 +832,27 @@ def perform_login(driver):
         
         print(f"[LOGIN] Campo de Senha encontrado")
         _write_stage_marker("login:password_found")
-        if not _type_text_with_action_chains(password_field, DIARIO_PASSWORD, "senha", mask=True):
-            _save_page_debug(driver, "login_password_fill_failed")
-            raise Exception("Falha ao preencher campo de senha com ActionChains")
+        _human_scroll_into_view(driver, password_field)
+        password_field.clear()
+        _human_pause(0.15, 0.4)
+        password_field.send_keys(DIARIO_PASSWORD)
         _human_pause(0.25, 0.7)
         print(f"[LOGIN] Senha preenchida")
+
+        def _dispatch_reactive_events(target):
+            """Dispara eventos para frameworks reativos (ex.: Vuetify) validarem o formulário."""
+            try:
+                driver.execute_script(
+                    """
+                    const el = arguments[0];
+                    ['input', 'change', 'blur'].forEach((evtName) => {
+                        el.dispatchEvent(new Event(evtName, { bubbles: true }));
+                    });
+                    """,
+                    target,
+                )
+            except Exception as e:
+                print(f"[LOGIN] Aviso: falha ao disparar eventos reativos: {e}")
 
         def _get_input_value(target):
             try:
@@ -866,6 +863,30 @@ def perform_login(driver):
                 except Exception:
                     return ""
 
+        def _set_input_value_js(target, value):
+            try:
+                driver.execute_script(
+                    """
+                    const el = arguments[0];
+                    const val = arguments[1];
+                    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                    if (setter) {
+                        setter.call(el, val);
+                    } else {
+                        el.value = val;
+                    }
+                    ['input', 'change', 'blur'].forEach((evtName) => {
+                        el.dispatchEvent(new Event(evtName, { bubbles: true }));
+                    });
+                    """,
+                    target,
+                    value,
+                )
+                return True
+            except Exception as e:
+                print(f"[LOGIN] Aviso: falha ao setar valor via JS: {e}")
+                return False
+
         def _ensure_field_value(field, expected_value, field_name, mask=False):
             actual = (_get_input_value(field) or "").strip()
             if actual == expected_value:
@@ -874,64 +895,113 @@ def perform_login(driver):
                 return True
 
             print(
-                f"[LOGIN] Aviso: valor de {field_name} diferente do esperado após digitação humanizada "
-                f"(len_atual={len(actual)} len_esperado={len(expected_value)}). Reaplicando via ActionChains..."
+                f"[LOGIN] Aviso: valor de {field_name} diferente do esperado após send_keys "
+                f"(len_atual={len(actual)} len_esperado={len(expected_value)}). Tentando fallback JS..."
             )
-            if not _type_text_with_action_chains(field, expected_value, field_name, mask=mask):
+            if not _set_input_value_js(field, expected_value):
                 return False
 
-            actual_after_retry = (_get_input_value(field) or "").strip()
-            if actual_after_retry == expected_value:
-                shown = f"len={len(actual_after_retry)}" if mask else (actual_after_retry[:3] + "***" if actual_after_retry else "")
-                print(f"[LOGIN] Valor confirmado em {field_name} após reaplicação com ActionChains: {shown}")
+            actual_after_js = (_get_input_value(field) or "").strip()
+            if actual_after_js == expected_value:
+                shown = f"len={len(actual_after_js)}" if mask else (actual_after_js[:3] + "***" if actual_after_js else "")
+                print(f"[LOGIN] Valor confirmado em {field_name} após fallback JS: {shown}")
                 return True
 
             print(
                 f"[LOGIN] ERRO: não foi possível confirmar valor em {field_name} "
-                f"(len_final={len(actual_after_retry)} len_esperado={len(expected_value)})"
+                f"(len_final={len(actual_after_js)} len_esperado={len(expected_value)})"
             )
             return False
 
+        def _resolve_active_login_container():
+            """Localiza o container ativo do login a partir dos campos já encontrados."""
+            if not _safe_element_ref(username_field) or not _safe_element_ref(password_field):
+                return None
+            try:
+                container = driver.execute_script(
+                    """
+                    const userField = arguments[0];
+                    const passField = arguments[1];
+
+                    function isVisible(el) {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+                            return false;
+                        }
+                        const rect = el.getBoundingClientRect();
+                        return rect.width > 0 && rect.height > 0;
+                    }
+
+                    let node = userField;
+                    while (node) {
+                        if (
+                            node.contains(passField) &&
+                            isVisible(node) &&
+                            node.querySelector("button")
+                        ) {
+                            return node;
+                        }
+                        node = node.parentElement;
+                    }
+
+                    return null;
+                    """,
+                    username_field,
+                    password_field,
+                )
+                return container
+            except Exception:
+                return None
+
         def _detect_visible_login_error():
             """Busca mensagens visíveis de erro para distinguir falha de autenticação de timeout de navegação."""
+            login_container = _resolve_active_login_container()
             error_selectors = [
-                "//*[contains(@class, 'error') and normalize-space()]",
-                "//*[contains(@class, 'alert') and normalize-space()]",
-                "//*[contains(@class, 'message') and normalize-space()]",
-                "//*[contains(@class, 'snackbar') and normalize-space()]",
-                "//*[contains(@class, 'toast') and normalize-space()]",
-                "//*[contains(@role, 'alert') and normalize-space()]",
-                "//*[contains(@aria-live, 'assertive') and normalize-space()]",
-                "//*[contains(@class, 'invalid') and normalize-space()]",
-                "//*[contains(@class, 'danger') and normalize-space()]",
+                ".//*[contains(@class, 'v-messages__message') and normalize-space()]",
+                ".//*[contains(@class, 'v-field__error') and normalize-space()]",
+                ".//*[contains(@class, 'error') and normalize-space()]",
+                ".//*[contains(@class, 'alert') and normalize-space()]",
+                ".//*[contains(@role, 'alert') and normalize-space()]",
+                ".//*[contains(@aria-live, 'assertive') and normalize-space()]",
             ]
-            keywords = (
-                "obrigat", "inválid", "inval", "incorret", "não confere", "nao confere",
-                "erro", "captcha", "bloque", "tentativa", "falhou", "acesso negado"
+            fatal_keywords = (
+                "inválid", "inval", "incorret", "não confere", "nao confere",
+                "acesso negado", "captcha", "bloque", "tentativa", "falhou", "credenc"
             )
 
+            soft_keywords = ("obrigat", "preencha", "campo obrigatório", "campo obrigatorio")
+
             snippets = []
+            search_root = login_container if login_container else driver
+
             for selector in error_selectors:
                 try:
-                    elements = driver.find_elements(By.XPATH, selector)
+                    elements = search_root.find_elements(By.XPATH, selector)
                 except Exception:
                     continue
                 for element in elements:
                     try:
                         if not element.is_displayed():
                             continue
-                        text = (element.text or "").strip()
+                        text = " ".join((element.text or "").split())
                         if not text:
                             continue
                         lowered = text.lower()
                         if len(lowered) > 260:
                             continue
+                        if lowered in ("senha", "e-mail", "email", "usuário", "usuario"):
+                            continue
                         if "já possuo cadastro" in lowered:
                             continue
-                        if any(k in lowered for k in keywords):
+
+                        if any(k in lowered for k in fatal_keywords):
                             snippets.append(text[:220])
                             if len(snippets) >= 3:
                                 break
+
+                        if any(k in lowered for k in soft_keywords):
+                            print(f"[LOGIN] Mensagem de validação não-fatal detectada: {text[:120]}")
                     except Exception:
                         continue
                 if len(snippets) >= 3:
@@ -997,24 +1067,6 @@ def perform_login(driver):
                 and "v-btn--disabled" not in state.get("classes", "")
                 and bool(state.get("is_enabled"))
             )
-
-        def _wait_login_button_clickable_and_enabled(timeout_seconds):
-            """Aguarda botão clicável e com atributo disabled ausente/falso."""
-            def _button_ready(_):
-                if not _safe_element_ref(login_button):
-                    return False
-                try:
-                    clickable = EC.element_to_be_clickable(login_button)(driver)
-                    if not clickable:
-                        return False
-                    disabled_attr = (login_button.get_attribute("disabled") or "").strip().lower()
-                    if disabled_attr in ("", "false", "0"):
-                        return login_button
-                except Exception:
-                    return False
-                return False
-
-            return WebDriverWait(driver, timeout_seconds, poll_frequency=0.2).until(_button_ready)
 
         def _log_field_lengths(stage_label):
             try:
@@ -1094,18 +1146,28 @@ def perform_login(driver):
 
             if not user_current:
                 print(f"[LOGIN] {label}: usuário vazio/resetado, reaplicando valor")
-                if not _type_text_with_action_chains(username_field, DIARIO_USER, "usuário"):
-                    return False
+                _human_scroll_into_view(driver, username_field)
+                username_field.clear()
+                _human_pause(0.1, 0.25)
+                username_field.send_keys(DIARIO_USER)
                 _human_pause(0.15, 0.35)
 
             if not pass_current:
                 print(f"[LOGIN] {label}: senha vazia/resetada, reaplicando valor")
-                if not _type_text_with_action_chains(password_field, DIARIO_PASSWORD, "senha", mask=True):
-                    return False
+                _human_scroll_into_view(driver, password_field)
+                password_field.clear()
+                _human_pause(0.1, 0.25)
+                password_field.send_keys(DIARIO_PASSWORD)
                 _human_pause(0.15, 0.35)
 
             user_ok = _ensure_field_value(username_field, DIARIO_USER, "usuário")
             pass_ok = _ensure_field_value(password_field, DIARIO_PASSWORD, "senha", mask=True)
+
+            if user_ok and pass_ok:
+                _dispatch_reactive_events(username_field)
+                _human_pause(0.1, 0.25)
+                _dispatch_reactive_events(password_field)
+                _human_pause(0.15, 0.35)
             _log_field_lengths(f"{label} pre-submit (depois de revalidar)")
             return user_ok and pass_ok
 
@@ -1202,11 +1264,33 @@ def perform_login(driver):
             "//button[1]",
         ]
         
-        login_button = find_clickable_element_with_fallback_any_frame(
-            driver,
-            button_selectors,
-            reserve_login_budget("botão Entrar", LOGIN_BUTTON_TIMEOUT),
-        )
+        login_button = None
+
+        # Prioriza botão dentro do container ativo (mesmo contexto dos campos usuário/senha).
+        login_container = _resolve_active_login_container()
+        if login_container:
+            for selector in [
+                ".//button[normalize-space()='Entrar']",
+                ".//span[normalize-space()='Entrar']/ancestor::button",
+                ".//button[contains(translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'entrar')]",
+                ".//button[@type='submit']",
+            ]:
+                try:
+                    for candidate in login_container.find_elements(By.XPATH, selector):
+                        if candidate.is_displayed():
+                            login_button = candidate
+                            break
+                except Exception:
+                    continue
+                if login_button:
+                    break
+
+        if not login_button:
+            login_button = find_clickable_element_with_fallback_any_frame(
+                driver,
+                button_selectors,
+                reserve_login_budget("botão Entrar", LOGIN_BUTTON_TIMEOUT),
+            )
         
         if not login_button:
             print("[LOGIN] Nenhum botão de entrar encontrado!")
@@ -1217,12 +1301,21 @@ def perform_login(driver):
         print(f"[LOGIN] Botão 'Entrar' encontrado")
         _write_stage_marker("login:button_found")
 
-        wait_budget = max(2.0, min(10.0, login_deadline - time.monotonic()))
-        print(f"[LOGIN] Aguardando botão habilitar (disabled ausente/falso), timeout={wait_budget:.1f}s")
-        try:
-            login_button = _wait_login_button_clickable_and_enabled(wait_budget)
-            login_button_enabled = True
-        except Exception:
+        # Força validação reativa dos campos antes de qualquer tentativa de submit.
+        _dispatch_reactive_events(username_field)
+        _human_pause(0.15, 0.35)
+        _dispatch_reactive_events(password_field)
+        _human_pause(0.2, 0.5)
+
+        enable_wait_deadline = time.monotonic() + 10.0
+        login_button_enabled = _is_login_button_enabled(login_button)
+        while not login_button_enabled and time.monotonic() < enable_wait_deadline:
+            _dispatch_reactive_events(password_field)
+            _human_pause(0.15, 0.3)
+            try:
+                _human_scroll_into_view(driver, login_button)
+            except Exception:
+                pass
             login_button_enabled = _is_login_button_enabled(login_button)
 
         button_state = _button_state_snapshot(login_button)
@@ -1237,7 +1330,7 @@ def perform_login(driver):
         if not login_button_enabled:
             _save_page_debug(driver, "login_button_still_disabled")
             raise TimeoutError(
-                "Botão 'Entrar' permaneceu desabilitado após preenchimento humanizado. "
+                "Botão 'Entrar' permaneceu desabilitado após preenchimento e eventos reativos. "
                 "A validação de frontend não confirmou o formulário."
             )
 
@@ -1249,9 +1342,7 @@ def perform_login(driver):
             try:
                 _prepare_submit_attempt("tentativa_1_click_humanizado")
                 if _safe_element_ref(login_button):
-                    wait_before_click = max(2.0, min(8.0, login_deadline - time.monotonic()))
-                    login_button = _wait_login_button_clickable_and_enabled(wait_before_click)
-                    ActionChains(driver).move_to_element(login_button).click().perform()
+                    _human_click(driver, login_button, label="botão Entrar")
                     print("[LOGIN] Submit principal realizado (ActionChains)")
                     _write_stage_marker("login:submitted_click", driver.current_url)
                     _log_field_lengths("tentativa_1_click_humanizado pos-submit")
@@ -2106,86 +2197,22 @@ def wait_for_download_completion():
     """Aguarda o download ser completado monitorando a pasta data/"""
     print("[DOWNLOAD] Aguardando conclusão do download...")
     _write_stage_marker("download:waiting")
-    crdownload_stall_timeout = 15
-    stable_size_required_checks = 2
     
     start_time = time.time()
-    crdownload_seen_since = None
-    last_pdf_path = None
-    last_pdf_size = None
-    stable_size_checks = 0
-
     while time.time() - start_time < DOWNLOAD_TIMEOUT:
-        now = time.time()
         # Procurar por arquivos .crdownload (indicam download em progresso)
-        crdownload_files = sorted(glob.glob(os.path.join(DATA_FOLDER, "*.crdownload")))
+        crdownload_files = glob.glob(os.path.join(DATA_FOLDER, "*.crdownload"))
         # Procurar por arquivos .pdf
-        pdf_files = sorted(glob.glob(os.path.join(DATA_FOLDER, "*.pdf")))
+        pdf_files = glob.glob(os.path.join(DATA_FOLDER, "*.pdf"))
         
         if crdownload_files:
-            if crdownload_seen_since is None:
-                crdownload_seen_since = now
-            stalled_for = now - crdownload_seen_since
-            print(
-                f"[DOWNLOAD] Arquivo em download: {crdownload_files[0]} "
-                f"(tempo em progresso: {stalled_for:.1f}s)"
-            )
-
-            if stalled_for > crdownload_stall_timeout:
-                stalled_file = crdownload_files[0]
-                _write_stage_marker(
-                    "download:crdownload_stalled",
-                    f"{stalled_file} | {stalled_for:.1f}s",
-                )
-                raise Exception(
-                    "Falha no tráfego de rede: arquivo .crdownload travado "
-                    "por mais de 15 segundos"
-                )
+            print(f"[DOWNLOAD] Arquivo em download: {crdownload_files[0]}")
             time.sleep(1)
             continue
-
-        crdownload_seen_since = None
         
         if pdf_files:
-            downloaded_file = max(pdf_files, key=lambda path: os.path.getmtime(path))
-            if downloaded_file != last_pdf_path:
-                last_pdf_path = downloaded_file
-                last_pdf_size = None
-                stable_size_checks = 0
-                print(f"[DOWNLOAD] PDF detectado: {downloaded_file}")
-
-            try:
-                current_size = os.path.getsize(downloaded_file)
-            except OSError as e:
-                print(f"[DOWNLOAD] Erro ao ler tamanho de {downloaded_file}: {e}")
-                time.sleep(1)
-                continue
-
-            if current_size <= 0:
-                stable_size_checks = 0
-                last_pdf_size = current_size
-                print("[DOWNLOAD] PDF com tamanho 0 bytes, aguardando escrita...")
-                time.sleep(1)
-                continue
-
-            if last_pdf_size == current_size:
-                stable_size_checks += 1
-            else:
-                stable_size_checks = 0
-            last_pdf_size = current_size
-
-            if stable_size_checks < stable_size_required_checks:
-                print(
-                    f"[DOWNLOAD] PDF ainda em escrita (tamanho={current_size} bytes, "
-                    f"estável por {stable_size_checks}s)"
-                )
-                time.sleep(1)
-                continue
-
-            print(
-                f"[DOWNLOAD] PDF estabilizado por 2s (tamanho final={current_size} bytes): "
-                f"{downloaded_file}"
-            )
+            downloaded_file = pdf_files[0]
+            print(f"[DOWNLOAD] PDF detectado: {downloaded_file}")
             
             # Validação do arquivo baixado
             if validate_downloaded_file(downloaded_file):
