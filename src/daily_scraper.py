@@ -2420,9 +2420,12 @@ def _start_login_network_capture(page):
             except Exception:
                 post_data_size = 0
 
+            event_ms = int(time.time() * 1000)
+
             append_event(
                 {
-                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "ts": datetime.now().isoformat(timespec="milliseconds"),
+                    "epoch_ms": event_ms,
                     "event": "request",
                     "method": request.method,
                     "url": _sanitize_url_for_network_log(request.url),
@@ -2434,9 +2437,11 @@ def _start_login_network_capture(page):
 
         def on_response(response):
             request = response.request
+            event_ms = int(time.time() * 1000)
             append_event(
                 {
-                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "ts": datetime.now().isoformat(timespec="milliseconds"),
+                    "epoch_ms": event_ms,
                     "event": "response",
                     "method": request.method,
                     "url": _sanitize_url_for_network_log(response.url),
@@ -2459,9 +2464,12 @@ def _start_login_network_capture(page):
             except Exception:
                 failure = "unknown"
 
+            event_ms = int(time.time() * 1000)
+
             append_event(
                 {
-                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "ts": datetime.now().isoformat(timespec="milliseconds"),
+                    "epoch_ms": event_ms,
                     "event": "requestfailed",
                     "method": request.method,
                     "url": _sanitize_url_for_network_log(request.url),
@@ -2510,7 +2518,218 @@ def _build_login_network_hint(events, max_items=4):
     return " | ".join(chunks)
 
 
-def _stop_login_network_capture(page, capture, outcome):
+def _summarize_endpoint_flow(events, endpoint_fragment):
+    """Resume requests/responses/failures de um endpoint especifico."""
+    requests = []
+    responses = []
+    failures = []
+
+    for event in events:
+        url = (event.get("url") or "").lower()
+        if endpoint_fragment not in url:
+            continue
+
+        event_type = event.get("event")
+        if event_type == "request":
+            requests.append(event)
+        elif event_type == "response":
+            responses.append(event)
+        elif event_type == "requestfailed":
+            failures.append(event)
+
+    statuses = []
+    for item in responses:
+        status = item.get("status")
+        if isinstance(status, int):
+            statuses.append(status)
+
+    completion_event = None
+    if requests:
+        first_request_ms = requests[0].get("epoch_ms")
+        for item in events:
+            url = (item.get("url") or "").lower()
+            if endpoint_fragment not in url:
+                continue
+            if item.get("event") not in ("response", "requestfailed"):
+                continue
+
+            event_ms = item.get("epoch_ms")
+            if isinstance(first_request_ms, int) and isinstance(event_ms, int) and event_ms < first_request_ms:
+                continue
+
+            completion_event = item
+            break
+
+    elapsed_ms = None
+    if requests and completion_event:
+        req_ms = requests[0].get("epoch_ms")
+        comp_ms = completion_event.get("epoch_ms")
+        if isinstance(req_ms, int) and isinstance(comp_ms, int) and comp_ms >= req_ms:
+            elapsed_ms = comp_ms - req_ms
+
+    return {
+        "requests": len(requests),
+        "responses": len(responses),
+        "failures": len(failures),
+        "statuses": statuses,
+        "last_status": statuses[-1] if statuses else None,
+        "failure_reasons": [item.get("failure", "") for item in failures if item.get("failure")][:4],
+        "completed": completion_event is not None,
+        "completion_event": completion_event.get("event") if completion_event else None,
+        "pending": len(requests) > 0 and completion_event is None,
+        "elapsed_ms": elapsed_ms,
+    }
+
+
+def _summarize_login_token_flow(events):
+    """Resume o handshake de autenticacao principal e passo de access-token."""
+    return {
+        "auth_token": _summarize_endpoint_flow(events, "/login/auth-token"),
+        "access_token": _summarize_endpoint_flow(events, "/login/access-token"),
+    }
+
+
+def _collect_challenge_signals_playwright(page):
+    """Coleta sinais de challenge invisivel (recaptcha/hcaptcha/turnstile)."""
+    signals = {
+        "recaptcha_iframes_visible": 0,
+        "hcaptcha_iframes": 0,
+        "cloudflare_turnstile_iframes": 0,
+        "recaptcha_script_loaded": False,
+        "any_challenge": False,
+    }
+
+    def _safe_count(selector):
+        try:
+            return page.locator(selector).count()
+        except Exception:
+            return 0
+
+    signals["recaptcha_iframes_visible"] = _safe_count(
+        "xpath=//iframe[contains(@src,'recaptcha') and not(contains(@style,'display:none'))]"
+    )
+    signals["hcaptcha_iframes"] = _safe_count("xpath=//iframe[contains(@src,'hcaptcha')]")
+    signals["cloudflare_turnstile_iframes"] = _safe_count(
+        "xpath=//iframe[contains(@src,'challenges.cloudflare.com') or contains(@src,'turnstile')]"
+    )
+
+    try:
+        html_lower = (page.content() or "").lower()
+        signals["recaptcha_script_loaded"] = "recaptcha/api.js" in html_lower
+    except Exception:
+        pass
+
+    signals["any_challenge"] = any(
+        [
+            signals["recaptcha_iframes_visible"] > 0,
+            signals["hcaptcha_iframes"] > 0,
+            signals["cloudflare_turnstile_iframes"] > 0,
+        ]
+    )
+    return signals
+
+
+def _collect_relevant_cookie_summary_playwright(page):
+    """Resume cookies de sessao/auth sem expor valores sensiveis."""
+    summary = {
+        "total_cookies": 0,
+        "relevant_count": 0,
+        "relevant": [],
+    }
+    cookie_keywords = ("sess", "session", "token", "auth", "jwt", "sid", "access", "refresh", "user")
+
+    try:
+        cookies = page.context.cookies()
+    except Exception:
+        return summary
+
+    summary["total_cookies"] = len(cookies)
+    relevant = []
+
+    for item in cookies:
+        name = (item.get("name") or "")
+        if not any(keyword in name.lower() for keyword in cookie_keywords):
+            continue
+
+        relevant.append(
+            {
+                "name": name,
+                "domain": item.get("domain", ""),
+                "path": item.get("path", ""),
+                "secure": bool(item.get("secure", False)),
+                "httpOnly": bool(item.get("httpOnly", False)),
+                "sameSite": item.get("sameSite", ""),
+                "value_length": len(item.get("value") or ""),
+            }
+        )
+
+    if len(relevant) > 12:
+        relevant = relevant[-12:]
+
+    summary["relevant"] = relevant
+    summary["relevant_count"] = len(relevant)
+    return summary
+
+
+def _capture_post_submit_probe_playwright(page, elapsed_seconds):
+    """Captura estado da sessao e da UI em checkpoints apos submit."""
+    probe = {
+        "elapsed_seconds": round(max(0.0, elapsed_seconds), 1),
+        "url": "",
+        "cookies": {},
+        "challenge_signals": {},
+        "form_snapshot": {},
+    }
+
+    try:
+        probe["url"] = _sanitize_url_for_network_log(page.url)
+    except Exception:
+        probe["url"] = ""
+
+    probe["cookies"] = _collect_relevant_cookie_summary_playwright(page)
+    probe["challenge_signals"] = _collect_challenge_signals_playwright(page)
+    probe["form_snapshot"] = _snapshot_login_form_state_playwright(page)
+    return probe
+
+
+def _classify_login_failure(validation_result, fatal_error, token_flow, final_snapshot, challenge_signals):
+    """Classifica a causa mais provavel da falha de login no pos-submit."""
+    fatal_text = (fatal_error or "").lower()
+    auth_flow = token_flow.get("auth_token", {})
+    access_flow = token_flow.get("access_token", {})
+    auth_statuses = auth_flow.get("statuses", [])
+    auth_ok = any(status in (200, 201, 202, 204) for status in auth_statuses)
+
+    if validation_result == "recaptcha_blocked":
+        return "challenge_detected"
+
+    if challenge_signals and challenge_signals.get("any_challenge"):
+        return "challenge_detected"
+
+    if any(status in (400, 401, 403, 422, 429) for status in auth_statuses):
+        return "auth_denied"
+
+    denied_keywords = ("inval", "incorret", "nao confere", "não confere", "acesso negado", "credenc", "senha")
+    if validation_result is False and any(keyword in fatal_text for keyword in denied_keywords):
+        return "auth_denied"
+
+    if auth_ok and access_flow.get("requests", 0) > 0 and not access_flow.get("completed", False):
+        return "auth_ok_access_pending"
+
+    locked_state = final_snapshot.get("button_disabled") and final_snapshot.get("disabled_inputs", 0) >= 2
+    if auth_ok and locked_state:
+        return "frontend_state_stuck"
+
+    if validation_result is False:
+        return "explicit_error"
+
+    if locked_state:
+        return "frontend_state_stuck"
+
+    return "timeout"
+
+
+def _stop_login_network_capture(page, capture, outcome, extra_summary=None):
     """Finaliza captura de rede, salva artifacts e retorna resumo."""
     if capture is None:
         return None
@@ -2533,6 +2752,8 @@ def _stop_login_network_capture(page, capture, outcome):
         status = str(item.get("status", "?"))
         status_counts[status] = status_counts.get(status, 0) + 1
 
+    login_flow = _summarize_login_token_flow(events)
+
     summary = {
         "outcome": outcome,
         "events_total": len(events),
@@ -2541,9 +2762,13 @@ def _stop_login_network_capture(page, capture, outcome):
         "status_counts": status_counts,
         "events_truncated": len(events) >= capture.get("max_events", LOGIN_NETWORK_EVENTS_MAX),
         "network_hint": _build_login_network_hint(events),
+        "login_flow": login_flow,
         "duration_seconds": round(max(0.0, time.time() - capture.get("started_at", time.time())), 2),
         "finished_at": datetime.now().isoformat(timespec="seconds"),
     }
+
+    if isinstance(extra_summary, dict):
+        summary.update(extra_summary)
 
     try:
         with open("/tmp/login_network_events.jsonl", "w", encoding="utf-8") as handle:
@@ -2617,15 +2842,41 @@ def _snapshot_login_form_state_playwright(page):
     return snapshot
 
 
-def _wait_login_success_playwright(page, timeout_seconds):
-    """Aguarda confirmação de autenticação por URL ou elementos da área logada."""
+def _wait_login_success_playwright(page, timeout_seconds, submit_started_at=None):
+    """Aguarda autenticacao e coleta probes de estado no pos-submit."""
     deadline = time.monotonic() + timeout_seconds
-    fatal_keywords = ["inválid", "inval", "incorret", "não confere", "nao confere", "acesso negado", "captcha", "bloque", "falhou"]
+    fatal_keywords = ["invalid", "inval", "incorret", "nao confere", "não confere", "acesso negado", "captcha", "bloque", "falhou"]
+    wait_context = {
+        "post_submit_probes": [],
+        "challenge_signals": {},
+    }
+    probe_targets_seconds = [5, 15, 45]
+    captured_targets = set()
+
+    def maybe_capture_probe():
+        if submit_started_at is None:
+            return
+
+        elapsed = max(0.0, time.monotonic() - submit_started_at)
+        for target in probe_targets_seconds:
+            if target in captured_targets or elapsed < target:
+                continue
+
+            probe = _capture_post_submit_probe_playwright(page, elapsed)
+            wait_context["post_submit_probes"].append(probe)
+            captured_targets.add(target)
+            _write_stage_marker(
+                "login:post_submit_probe",
+                f"t={target}s url={probe.get('url', '')} cookies={probe.get('cookies', {}).get('relevant_count', 0)}",
+            )
 
     while time.monotonic() < deadline:
+        maybe_capture_probe()
+
         current_url = (page.url or "").lower()
         if "/assinante/newflip" in current_url:
-            return True, None
+            wait_context["challenge_signals"] = _collect_challenge_signals_playwright(page)
+            return True, None, wait_context
 
         success_markers = [
             "xpath=//*[contains(., 'Data Edição') or contains(., 'Data Edicao')]",
@@ -2636,7 +2887,8 @@ def _wait_login_success_playwright(page, timeout_seconds):
             try:
                 loc = page.locator(marker)
                 if loc.count() > 0 and loc.first.is_visible():
-                    return True, None
+                    wait_context["challenge_signals"] = _collect_challenge_signals_playwright(page)
+                    return True, None, wait_context
             except Exception:
                 continue
 
@@ -2646,15 +2898,23 @@ def _wait_login_success_playwright(page, timeout_seconds):
             for idx in range(total):
                 txt = " ".join((alert_nodes.nth(idx).inner_text() or "").split()).lower()
                 if "captcha" in txt:
-                    return "recaptcha_blocked", txt
+                    wait_context["challenge_signals"] = _collect_challenge_signals_playwright(page)
+                    return "recaptcha_blocked", txt, wait_context
                 if any(word in txt for word in fatal_keywords):
-                    return False, txt
+                    wait_context["challenge_signals"] = _collect_challenge_signals_playwright(page)
+                    return False, txt, wait_context
         except Exception:
             pass
 
         time.sleep(0.7)
 
-    return None, None
+    maybe_capture_probe()
+    if submit_started_at is not None and not wait_context["post_submit_probes"]:
+        wait_context["post_submit_probes"].append(
+            _capture_post_submit_probe_playwright(page, time.monotonic() - submit_started_at)
+        )
+    wait_context["challenge_signals"] = _collect_challenge_signals_playwright(page)
+    return None, None, wait_context
 
 
 def perform_login_playwright(page):
@@ -2663,6 +2923,7 @@ def perform_login_playwright(page):
     _write_stage_marker("login:start", DIARIO_LOGIN_URL)
     login_outcome = "unknown"
     network_capture = _start_login_network_capture(page)
+    network_extra_summary = {}
 
     try:
         page.goto(DIARIO_LOGIN_URL, wait_until="domcontentloaded")
@@ -2720,45 +2981,108 @@ def perform_login_playwright(page):
         _write_stage_marker("login:submitted_click", page.url)
         print("[LOGIN] Submit principal realizado (Playwright click)")
 
-        validation_result, fatal_error = _wait_login_success_playwright(page, LOGIN_TOTAL_TIMEOUT)
+        submit_started_at = time.monotonic()
+        validation_result, fatal_error, wait_context = _wait_login_success_playwright(
+            page,
+            LOGIN_TOTAL_TIMEOUT,
+            submit_started_at=submit_started_at,
+        )
+        network_extra_summary["post_submit_probes"] = wait_context.get("post_submit_probes", [])
+        challenge_signals = wait_context.get("challenge_signals", {})
+        network_extra_summary["challenge_signals"] = challenge_signals
+
         if validation_result is True:
             login_outcome = "success"
+            network_extra_summary["validation_result"] = "success"
             print(f"[LOGIN] ✓ Login realizado e validado com sucesso. URL: {page.url}")
             _write_stage_marker("login:completed", page.url)
             return
 
-        network_hint = _build_login_network_hint(network_capture.get("events", []))
+        events = network_capture.get("events", []) if network_capture else []
+        network_hint = _build_login_network_hint(events)
+        token_flow = _summarize_login_token_flow(events)
+        final_snapshot = _snapshot_login_form_state_playwright(page)
 
-        if validation_result is False:
-            login_outcome = "explicit_error"
-            _save_page_debug_playwright(page, "login_failed_after_click")
+        network_extra_summary["login_flow"] = token_flow
+        network_extra_summary["validation_result"] = str(validation_result)
+        network_extra_summary["final_form_snapshot"] = final_snapshot
+        if fatal_error:
+            network_extra_summary["fatal_error"] = fatal_error
+
+        failure_classification = _classify_login_failure(
+            validation_result,
+            fatal_error,
+            token_flow,
+            final_snapshot,
+            challenge_signals,
+        )
+        network_extra_summary["failure_classification"] = failure_classification
+        _write_stage_marker("login:failure_classification", failure_classification)
+
+        if failure_classification == "auth_denied":
+            login_outcome = "auth_denied"
+            _save_page_debug_playwright(page, "login_auth_denied")
             raise Exception(
-                "Login falhou após submit no Playwright: mensagem de erro explícita detectada"
+                "Login falhou: autenticacao negada no pos-submit"
                 + (f" ({fatal_error})" if fatal_error else "")
                 + f" | network_hint={network_hint}"
             )
 
-        final_snapshot = _snapshot_login_form_state_playwright(page)
-        if final_snapshot.get("button_disabled") and final_snapshot.get("disabled_inputs", 0) >= 2:
-            login_outcome = "form_locked"
-            _write_stage_marker(
-                "login:form_locked",
-                f"disabled_inputs={final_snapshot.get('disabled_inputs', 0)}"
-            )
-            _save_page_debug_playwright(page, "login_form_locked")
+        if failure_classification == "challenge_detected":
+            login_outcome = "challenge_detected"
+            _write_stage_marker("login:challenge_detected")
+            _save_page_debug_playwright(page, "login_challenge_detected")
             raise TimeoutError(
-                "Login não concluiu: formulário permaneceu desabilitado durante toda a janela de validação"
+                "Login nao concluiu: challenge detectado no pos-submit"
+                + (f" ({fatal_error})" if fatal_error else "")
+                + f" | network_hint={network_hint}"
+            )
+
+        if failure_classification == "auth_ok_access_pending":
+            login_outcome = "auth_ok_access_pending"
+            _write_stage_marker(
+                "login:access_token_pending",
+                f"requests={token_flow.get('access_token', {}).get('requests', 0)}",
+            )
+            _save_page_debug_playwright(page, "login_access_token_pending")
+            raise TimeoutError(
+                "Login nao concluiu: auth-token respondeu, mas access-token ficou pendente"
+                + f" | network_hint={network_hint}"
+            )
+
+        if failure_classification == "frontend_state_stuck":
+            login_outcome = "frontend_state_stuck"
+            if final_snapshot.get("button_disabled") and final_snapshot.get("disabled_inputs", 0) >= 2:
+                _write_stage_marker(
+                    "login:form_locked",
+                    f"disabled_inputs={final_snapshot.get('disabled_inputs', 0)}",
+                )
+                _save_page_debug_playwright(page, "login_form_locked")
+            else:
+                _write_stage_marker("login:frontend_state_stuck")
+                _save_page_debug_playwright(page, "login_frontend_state_stuck")
+            raise TimeoutError(
+                "Login nao concluiu: frontend manteve estado travado apos autenticacao"
+                + f" | network_hint={network_hint}"
+            )
+
+        if failure_classification == "explicit_error":
+            login_outcome = "explicit_error"
+            _save_page_debug_playwright(page, "login_failed_after_click")
+            raise Exception(
+                "Login falhou apos submit no Playwright: mensagem explicita detectada"
+                + (f" ({fatal_error})" if fatal_error else "")
                 + f" | network_hint={network_hint}"
             )
 
         login_outcome = "timeout"
         _save_page_debug_playwright(page, "login_timeout_validation")
         raise TimeoutError(
-            "Não foi possível validar login via Playwright dentro do timeout configurado"
+            "Nao foi possivel validar login via Playwright dentro do timeout configurado"
             + f" | network_hint={network_hint}"
         )
     finally:
-        summary = _stop_login_network_capture(page, network_capture, login_outcome)
+        summary = _stop_login_network_capture(page, network_capture, login_outcome, network_extra_summary)
         if summary:
             _write_stage_marker(
                 "login:network_summary",
