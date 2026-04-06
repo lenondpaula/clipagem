@@ -2420,7 +2420,6 @@ def _wait_login_success_playwright(page, timeout_seconds):
     """Aguarda confirmação de autenticação por URL ou elementos da área logada."""
     deadline = time.monotonic() + timeout_seconds
     fatal_keywords = ["inválid", "inval", "incorret", "não confere", "nao confere", "acesso negado", "captcha", "bloque", "falhou"]
-    lock_streak = 0
 
     while time.monotonic() < deadline:
         current_url = (page.url or "").lower()
@@ -2451,26 +2450,6 @@ def _wait_login_success_playwright(page, timeout_seconds):
                     return False, txt
         except Exception:
             pass
-
-        lock_snapshot = _snapshot_login_form_state_playwright(page)
-        lock_detected = (
-            lock_snapshot.get("button_disabled")
-            and lock_snapshot.get("disabled_inputs", 0) >= 2
-        )
-        if lock_detected:
-            lock_streak += 1
-            if lock_streak >= 5:
-                if lock_snapshot.get("has_visible_recaptcha_widget"):
-                    return "recaptcha_blocked", (
-                        "form_locked_with_visible_recaptcha_widget"
-                        f" (disabled_inputs={lock_snapshot.get('disabled_inputs', 0)})"
-                    )
-                return "form_locked", (
-                    "form_locked_after_submit"
-                    f" (disabled_inputs={lock_snapshot.get('disabled_inputs', 0)})"
-                )
-        else:
-            lock_streak = 0
 
         time.sleep(0.7)
 
@@ -2539,27 +2518,22 @@ def perform_login_playwright(page):
         _write_stage_marker("login:completed", page.url)
         return
 
-    if validation_result == "recaptcha_blocked":
-        _write_stage_marker("login:recaptcha_blocked", fatal_error or "")
-        _save_page_debug_playwright(page, "login_recaptcha_blocked")
-        raise Exception(
-            "Login bloqueado após submit: widget de captcha visível manteve o formulário travado"
-            + (f" ({fatal_error})" if fatal_error else "")
-        )
-
-    if validation_result == "form_locked":
-        _write_stage_marker("login:form_locked", fatal_error or "")
-        _save_page_debug_playwright(page, "login_form_locked")
-        raise Exception(
-            "Login bloqueado após submit: formulário permaneceu desabilitado por tempo prolongado"
-            + (f" ({fatal_error})" if fatal_error else "")
-        )
-
     if validation_result is False:
         _save_page_debug_playwright(page, "login_failed_after_click")
         raise Exception(
             "Login falhou após submit no Playwright: mensagem de erro explícita detectada"
             + (f" ({fatal_error})" if fatal_error else "")
+        )
+
+    final_snapshot = _snapshot_login_form_state_playwright(page)
+    if final_snapshot.get("button_disabled") and final_snapshot.get("disabled_inputs", 0) >= 2:
+        _write_stage_marker(
+            "login:form_locked",
+            f"disabled_inputs={final_snapshot.get('disabled_inputs', 0)}"
+        )
+        _save_page_debug_playwright(page, "login_form_locked")
+        raise TimeoutError(
+            "Login não concluiu: formulário permaneceu desabilitado durante toda a janela de validação"
         )
 
     _save_page_debug_playwright(page, "login_timeout_validation")
